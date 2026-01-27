@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useAccount, type PeriodPreset } from '@/components/creatives/account-context';
 import { useTheme } from 'next-themes';
-import { Calendar, Sun, Moon, CalendarRange } from 'lucide-react';
+import { Calendar as CalendarIcon, Sun, Moon, CalendarRange } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Select,
@@ -17,8 +17,10 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { Calendar } from '@/components/ui/calendar';
+import { format, parseISO } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
+import type { DateRange } from 'react-day-picker';
 
 const presetOptions: { value: PeriodPreset; label: string }[] = [
   { value: 'today', label: 'Hoje' },
@@ -42,27 +44,37 @@ export function TopHeader() {
     setCustomRange,
   } = useAccount();
   const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const [customOpen, setCustomOpen] = useState(false);
-  const [tmpStart, setTmpStart] = useState(dateStart);
-  const [tmpEnd, setTmpEnd] = useState(dateEnd);
+  const [range, setRange] = useState<DateRange | undefined>(undefined);
 
   const handlePresetChange = (val: string) => {
     if (val === 'custom') {
-      setTmpStart(dateStart);
-      setTmpEnd(dateEnd);
+      // Initialize range from current dates
+      setRange({
+        from: dateStart ? parseISO(dateStart) : undefined,
+        to: dateEnd ? parseISO(dateEnd) : undefined,
+      });
       setCustomOpen(true);
     } else {
       setPeriodPreset(val as PeriodPreset);
     }
   };
 
-  const handleCustomApply = () => {
-    if (tmpStart && tmpEnd && tmpStart <= tmpEnd) {
-      setCustomRange(tmpStart, tmpEnd);
+  const handleCustomApply = useCallback(() => {
+    if (range?.from && range?.to) {
+      const start = format(range.from, 'yyyy-MM-dd');
+      const end = format(range.to, 'yyyy-MM-dd');
+      setCustomRange(start, end);
       setCustomOpen(false);
     }
-  };
+  }, [range, setCustomRange]);
+
+  const handleCustomCancel = useCallback(() => {
+    setCustomOpen(false);
+  }, []);
 
   const toggleTheme = () => {
     setTheme(theme === 'dark' ? 'light' : 'dark');
@@ -72,7 +84,7 @@ export function TopHeader() {
     <header className="flex items-center justify-between border-b bg-background px-4 py-2">
       {/* Active period label */}
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <Calendar className="h-3 w-3" />
+        <CalendarIcon className="h-3 w-3" />
         <span>{periodLabel}</span>
         {periodPreset !== 'custom' && (
           <span className="opacity-50">
@@ -91,7 +103,7 @@ export function TopHeader() {
               onValueChange={handlePresetChange}
             >
               <SelectTrigger className="w-[140px] h-8 text-xs">
-                <Calendar className="h-3 w-3 mr-1 text-muted-foreground" />
+                <CalendarIcon className="h-3 w-3 mr-1 text-muted-foreground" />
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -110,38 +122,47 @@ export function TopHeader() {
               </PopoverTrigger>
             )}
           </div>
-          <PopoverContent className="w-72" align="end">
-            <div className="space-y-3">
-              <div className="text-sm font-medium">Periodo personalizado</div>
-              <div className="text-xs text-muted-foreground">Maximo 90 dias</div>
-              <div className="grid grid-cols-2 gap-2">
+          <PopoverContent className="w-auto p-0" align="end">
+            <div className="p-3 space-y-3">
+              <div className="flex items-center justify-between">
                 <div>
-                  <Label className="text-xs">Inicio</Label>
-                  <Input
-                    type="date"
-                    value={tmpStart}
-                    onChange={(e) => setTmpStart(e.target.value)}
-                    className="h-8 text-xs"
-                  />
+                  <div className="text-sm font-medium">Periodo personalizado</div>
+                  <div className="text-xs text-muted-foreground">Maximo 90 dias</div>
                 </div>
-                <div>
-                  <Label className="text-xs">Fim</Label>
-                  <Input
-                    type="date"
-                    value={tmpEnd}
-                    onChange={(e) => setTmpEnd(e.target.value)}
-                    className="h-8 text-xs"
-                  />
-                </div>
+                {range?.from && (
+                  <div className="text-xs text-muted-foreground text-right">
+                    {format(range.from, 'dd/MM/yyyy')}
+                    {range.to ? ` — ${format(range.to, 'dd/MM/yyyy')}` : ' — ...'}
+                  </div>
+                )}
               </div>
-              <Button
-                size="sm"
-                className="w-full h-8 text-xs"
-                onClick={handleCustomApply}
-                disabled={!tmpStart || !tmpEnd || tmpStart > tmpEnd}
-              >
-                Aplicar
-              </Button>
+              <Calendar
+                mode="range"
+                selected={range}
+                onSelect={setRange}
+                numberOfMonths={2}
+                locale={ptBR}
+                disabled={{ after: new Date() }}
+                defaultMonth={range?.from}
+              />
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1 h-8 text-xs"
+                  onClick={handleCustomCancel}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  size="sm"
+                  className="flex-1 h-8 text-xs"
+                  onClick={handleCustomApply}
+                  disabled={!range?.from || !range?.to}
+                >
+                  Aplicar
+                </Button>
+              </div>
             </div>
           </PopoverContent>
         </Popover>
@@ -168,7 +189,7 @@ export function TopHeader() {
           size="sm"
           className="h-8 w-8 p-0"
           onClick={toggleTheme}
-          title={theme === 'dark' ? 'Modo claro' : 'Modo escuro'}
+          title={mounted ? (theme === 'dark' ? 'Modo claro' : 'Modo escuro') : undefined}
         >
           <Sun className="h-3.5 w-3.5 rotate-0 scale-100 transition-transform dark:-rotate-90 dark:scale-0" />
           <Moon className="absolute h-3.5 w-3.5 rotate-90 scale-0 transition-transform dark:rotate-0 dark:scale-100" />
