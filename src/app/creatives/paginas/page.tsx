@@ -1,6 +1,5 @@
 'use client';
 
-import { NavTabs } from '@/components/creatives/nav-tabs';
 import { useAccount } from '@/components/creatives/account-context';
 import { Globe, AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
 
@@ -69,9 +68,7 @@ export default function PaginasPage() {
   const accountName = accounts.find(a => a.ad_account_id === selectedAccount)?.name || selectedAccount;
 
   return (
-    <>
-      <NavTabs />
-      <div className="flex flex-1 flex-col overflow-hidden px-6 py-4">
+      <div className="flex flex-1 flex-col px-6 py-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
             <h1 className="text-xl font-bold">Performance de Paginas</h1>
@@ -178,6 +175,5 @@ export default function PaginasPage() {
           Dados de exemplo. Conecte Google Analytics ou Meta Pixel para dados reais de paginas.
         </div>
       </div>
-    </>
   );
 }

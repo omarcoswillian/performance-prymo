@@ -3,7 +3,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
-import { NavTabs } from '@/components/creatives/nav-tabs';
 import { StatusBadge } from '@/components/creatives/status-badge';
 import { useAccount } from '@/components/creatives/account-context';
 import { Button } from '@/components/ui/button';
@@ -16,7 +15,22 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { RefreshCw, Loader2, ImageIcon, MousePointerClick, ShoppingCart, Target, PointerIcon, Percent, Trophy } from 'lucide-react';
+import {
+  RefreshCw,
+  Loader2,
+  ImageIcon,
+  MousePointerClick,
+  ShoppingCart,
+  Target,
+  PointerIcon,
+  Percent,
+  Trophy,
+  AlertTriangle,
+  ExternalLink,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+} from 'lucide-react';
 import { formatCurrency, formatPercent, formatNumber } from '@/lib/format';
 import {
   ResponsiveContainer,
@@ -48,9 +62,52 @@ interface DailyTotal {
   ctr: number;
 }
 
+interface PeriodTotals {
+  impressions: number;
+  clicks: number;
+  compras: number;
+  spend: number;
+  ctr: number;
+  cpa: number | null;
+  taxaConversao: number;
+}
+
+function computeTotals(creatives: CreativeMetrics[]): PeriodTotals {
+  const impressions = creatives.reduce((s, c) => s + c.impressions, 0);
+  const clicks = creatives.reduce((s, c) => s + c.clicks, 0);
+  const compras = creatives.reduce((s, c) => s + c.compras, 0);
+  const spend = creatives.reduce((s, c) => s + c.spend, 0);
+  return {
+    impressions,
+    clicks,
+    compras,
+    spend,
+    ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
+    cpa: compras > 0 ? spend / compras : null,
+    taxaConversao: clicks > 0 ? (compras / clicks) * 100 : 0,
+  };
+}
+
+function getMetaAdsUrl(adAccountId: string, adId: string): string {
+  const cleanAccountId = adAccountId.replace(/^act_/, '');
+  return `https://adsmanager.facebook.com/adsmanager/manage/ads?act=${cleanAccountId}&selected_ad_ids=${adId}`;
+}
+
+type TrendDir = 'up' | 'down' | 'stable';
+
+function computeTrend(current: number | null, previous: number | null, invertBetter?: boolean): TrendDir {
+  if (current === null || previous === null || previous === 0) return 'stable';
+  const delta = ((current - previous) / Math.abs(previous)) * 100;
+  if (Math.abs(delta) < 3) return 'stable';
+  const isUp = delta > 0;
+  // For CPA, "up" is bad, so we invert
+  if (invertBetter) return isUp ? 'down' : 'up';
+  return isUp ? 'up' : 'down';
+}
+
 export default function CommandPage() {
   const router = useRouter();
-  const { selectedAccount, dateStart, dateEnd } = useAccount();
+  const { selectedAccount, dateStart, dateEnd, prevDateStart, prevDateEnd } = useAccount();
   const [creatives, setCreatives] = useState<CreativeWithDecision[]>([]);
   const [dailyTotals, setDailyTotals] = useState<DailyTotal[]>([]);
   const [ctrBenchmark, setCtrBenchmark] = useState(0);
@@ -58,22 +115,26 @@ export default function CommandPage() {
   const [syncing, setSyncing] = useState(false);
   const [overrides] = useState<Record<string, string>>({});
 
-  // Summary totals
-  const totalImpressions = creatives.reduce((s, c) => s + c.impressions, 0);
-  const totalClicks = creatives.reduce((s, c) => s + c.clicks, 0);
-  const totalCtr = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0;
-  const totalCompras = creatives.reduce((s, c) => s + c.compras, 0);
-  const totalSpend = creatives.reduce((s, c) => s + c.spend, 0);
-  const avgCpa = totalCompras > 0 ? totalSpend / totalCompras : null;
-  const taxaConversao = totalClicks > 0 ? (totalCompras / totalClicks) * 100 : 0;
+  // Current period totals (from decision-applied creatives)
+  const currentTotals = computeTotals(creatives);
+
+  // Previous period totals
+  const [prevTotals, setPrevTotals] = useState<PeriodTotals | null>(null);
 
   const fetchData = useCallback(async () => {
     if (!selectedAccount || !dateStart || !dateEnd) return;
     setLoading(true);
     try {
-      const res = await fetch(
-        `/api/meta/insights?ad_account_id=${selectedAccount}&date_start=${dateStart}&date_end=${dateEnd}&type=command`
-      );
+      // Fetch current + previous period in parallel
+      const [res, prevRes] = await Promise.all([
+        fetch(
+          `/api/meta/insights?ad_account_id=${selectedAccount}&date_start=${dateStart}&date_end=${dateEnd}&type=command`
+        ),
+        fetch(
+          `/api/meta/insights?ad_account_id=${selectedAccount}&date_start=${prevDateStart}&date_end=${prevDateEnd}&type=command`
+        ),
+      ]);
+
       if (res.ok) {
         const data = await res.json();
         const raw: CreativeMetrics[] = data.creatives || [];
@@ -86,12 +147,18 @@ export default function CommandPage() {
             : 0
         );
       }
+
+      if (prevRes.ok) {
+        const prevData = await prevRes.json();
+        const prevRaw: CreativeMetrics[] = prevData.creatives || [];
+        setPrevTotals(computeTotals(prevRaw));
+      }
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
     }
-  }, [selectedAccount, dateStart, dateEnd, overrides]);
+  }, [selectedAccount, dateStart, dateEnd, prevDateStart, prevDateEnd, overrides]);
 
   const handleSync = useCallback(async () => {
     if (!selectedAccount || syncing) return;
@@ -112,6 +179,13 @@ export default function CommandPage() {
 
   const countByStatus = (s: string) => creatives.filter(c => c.status === s).length;
 
+  // Trend directions
+  const ctrTrend = computeTrend(currentTotals.ctr, prevTotals?.ctr ?? null);
+  const clicksTrend = computeTrend(currentTotals.clicks, prevTotals?.clicks ?? null);
+  const comprasTrend = computeTrend(currentTotals.compras, prevTotals?.compras ?? null);
+  const convTrend = computeTrend(currentTotals.taxaConversao, prevTotals?.taxaConversao ?? null);
+  const cpaTrend = computeTrend(currentTotals.cpa, prevTotals?.cpa ?? null, true);
+
   // Ranking: Top 10 excluding MATAR, sorted by Compras desc > CPA asc > CTR desc
   const topCreatives = creatives
     .filter(c => c.status !== 'MATAR')
@@ -125,18 +199,40 @@ export default function CommandPage() {
     })
     .slice(0, 10);
 
+  // Worst creatives: status MATAR, OR spent >= min_spend with 0 purchases, OR CPA > 1.3x target
+  const worstCreatives = creatives
+    .filter(c =>
+      c.status === 'MATAR' ||
+      (c.spend >= DEFAULT_SETTINGS.min_spend && c.compras === 0) ||
+      (c.cpa !== null && c.cpa > DEFAULT_SETTINGS.cpa_target * DEFAULT_SETTINGS.cpa_kill_multiplier)
+    )
+    .sort((a, b) => {
+      const wasteA = a.compras === 0 ? a.spend : 0;
+      const wasteB = b.compras === 0 ? b.spend : 0;
+      if (wasteB !== wasteA) return wasteB - wasteA;
+      const ratioA = a.cpa !== null ? a.cpa / DEFAULT_SETTINGS.cpa_target : 0;
+      const ratioB = b.cpa !== null ? b.cpa / DEFAULT_SETTINGS.cpa_target : 0;
+      if (ratioB !== ratioA) return ratioB - ratioA;
+      return a.ctr - b.ctr;
+    })
+    .slice(0, 5);
+
+  const getWorstReason = (c: CreativeWithDecision): string => {
+    if (c.compras === 0 && c.spend >= DEFAULT_SETTINGS.min_spend) return `R$${c.spend.toFixed(2)} gasto sem compras`;
+    if (c.cpa !== null && c.cpa > DEFAULT_SETTINGS.cpa_target * DEFAULT_SETTINGS.cpa_kill_multiplier) return `CPA ${formatCurrency(c.cpa)} > alvo`;
+    return `CTR ${formatPercent(c.ctr)} abaixo`;
+  };
+
   return (
-    <>
-      <NavTabs />
-      <div className="flex flex-1 flex-col overflow-hidden px-6 py-4">
+      <div className="flex flex-1 flex-col px-6 py-4">
         {/* Header row */}
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-xl font-bold">Painel de Comando</h1>
           <div className="flex items-center gap-3">
             <div className="flex gap-2 text-xs">
-              <span className="rounded bg-emerald-500/15 px-2 py-0.5 text-emerald-700">{countByStatus('ESCALAR')} escalar</span>
-              <span className="rounded bg-amber-500/15 px-2 py-0.5 text-amber-700">{countByStatus('VARIAR')} variar</span>
-              <span className="rounded bg-red-500/15 px-2 py-0.5 text-red-700">{countByStatus('MATAR')} matar</span>
+              <span className="rounded bg-emerald-500/15 px-2 py-0.5 text-emerald-700 dark:text-emerald-400">{countByStatus('ESCALAR')} escalar</span>
+              <span className="rounded bg-amber-500/15 px-2 py-0.5 text-amber-700 dark:text-amber-400">{countByStatus('VARIAR')} variar</span>
+              <span className="rounded bg-red-500/15 px-2 py-0.5 text-red-700 dark:text-red-400">{countByStatus('MATAR')} matar</span>
             </div>
             <Button onClick={handleSync} disabled={syncing} variant="outline" size="sm" className="h-8">
               {syncing ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 h-3 w-3" />}
@@ -145,13 +241,136 @@ export default function CommandPage() {
           </div>
         </div>
 
-        {/* 5 Metric cards */}
+        {/* 5 Metric cards with trend arrows */}
         <div className="grid grid-cols-5 gap-3 mb-4">
-          <MetricBox icon={MousePointerClick} label="CTR" value={formatPercent(totalCtr)} sub={`Benchmark: ${formatPercent(ctrBenchmark)}`} loading={loading} />
-          <MetricBox icon={PointerIcon} label="Cliques" value={formatNumber(totalClicks)} loading={loading} />
-          <MetricBox icon={ShoppingCart} label="Compras" value={formatNumber(totalCompras)} loading={loading} />
-          <MetricBox icon={Percent} label="Taxa Conv." value={formatPercent(taxaConversao)} sub={`${totalClicks} cliques → ${totalCompras} conv.`} loading={loading} />
-          <MetricBox icon={Target} label="CPA" value={formatCurrency(avgCpa)} sub={`Alvo: ${formatCurrency(DEFAULT_SETTINGS.cpa_target)}`} loading={loading} />
+          <MetricBox icon={MousePointerClick} label="CTR" value={formatPercent(currentTotals.ctr)} sub={`Benchmark: ${formatPercent(ctrBenchmark)}`} loading={loading} trend={ctrTrend} />
+          <MetricBox icon={PointerIcon} label="Cliques" value={formatNumber(currentTotals.clicks)} loading={loading} trend={clicksTrend} />
+          <MetricBox icon={ShoppingCart} label="Compras" value={formatNumber(currentTotals.compras)} loading={loading} trend={comprasTrend} />
+          <MetricBox icon={Percent} label="Taxa Conv." value={formatPercent(currentTotals.taxaConversao)} sub={`${currentTotals.clicks} cliques → ${currentTotals.compras} conv.`} loading={loading} trend={convTrend} />
+          <MetricBox icon={Target} label="CPA" value={formatCurrency(currentTotals.cpa)} sub={`Alvo: ${formatCurrency(DEFAULT_SETTINGS.cpa_target)}`} loading={loading} trend={cpaTrend} />
+        </div>
+
+        {/* Top vs Piores — side by side */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          {/* Top Criativos */}
+          <div className="rounded-lg border border-emerald-500/20 bg-card">
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-emerald-500/10">
+              <Trophy className="h-4 w-4 text-emerald-600" />
+              <span className="text-sm font-medium">Top Criativos</span>
+              <span className="text-[10px] text-muted-foreground ml-auto">{topCreatives.length} criativos</span>
+            </div>
+            <div className="px-4 py-3">
+              {loading ? (
+                <div className="flex flex-col gap-2">
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <Skeleton key={i} className="h-12 w-full" />
+                  ))}
+                </div>
+              ) : topCreatives.length === 0 ? (
+                <div className="py-8 text-center text-xs text-muted-foreground">
+                  Nenhum criativo com compras no periodo.
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {topCreatives.map((c, idx) => (
+                    <div
+                      key={c.ad_id}
+                      className="flex items-center gap-2.5 rounded-md border px-2.5 py-2 cursor-pointer hover:bg-muted/50 transition-colors"
+                      onClick={() => router.push(`/creatives/diagnostico/${c.ad_id}`)}
+                    >
+                      <span className="text-xs font-bold text-muted-foreground w-5 shrink-0">#{idx + 1}</span>
+                      {c.thumbnail_url ? (
+                        <Image src={c.thumbnail_url} alt="" width={32} height={32} className="rounded object-cover shrink-0" unoptimized />
+                      ) : (
+                        <div className="flex h-8 w-8 items-center justify-center rounded bg-muted shrink-0">
+                          <ImageIcon className="h-3 w-3 text-muted-foreground" />
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <a
+                          href={selectedAccount ? getMetaAdsUrl(selectedAccount, c.ad_id) : '#'}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs font-medium truncate block text-primary hover:underline"
+                          onClick={(e) => e.stopPropagation()}
+                          title="Abrir no Meta Ads Manager"
+                        >
+                          {c.name}
+                          <ExternalLink className="inline-block ml-1 h-2.5 w-2.5 opacity-50" />
+                        </a>
+                        <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                          <span>{c.compras} compras</span>
+                          <span>&middot;</span>
+                          <span>{formatCurrency(c.cpa)}</span>
+                          <span>&middot;</span>
+                          <span>CTR {formatPercent(c.ctr)}</span>
+                        </div>
+                      </div>
+                      <StatusBadge status={c.status} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Piores Criativos */}
+          <div className="rounded-lg border border-red-500/20 bg-card">
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-red-500/10">
+              <AlertTriangle className="h-4 w-4 text-red-500" />
+              <span className="text-sm font-medium">Piores Criativos</span>
+              <span className="text-[10px] text-muted-foreground ml-auto">{worstCreatives.length} criativos</span>
+            </div>
+            <div className="px-4 py-3">
+              {loading ? (
+                <div className="flex flex-col gap-2">
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <Skeleton key={i} className="h-12 w-full" />
+                  ))}
+                </div>
+              ) : worstCreatives.length === 0 ? (
+                <div className="py-8 text-center text-xs text-muted-foreground">
+                  Nenhum criativo com performance critica.
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {worstCreatives.map((c, idx) => (
+                    <div
+                      key={c.ad_id}
+                      className="flex items-center gap-2.5 rounded-md border border-red-500/20 bg-red-500/5 px-2.5 py-2 cursor-pointer hover:bg-red-500/10 transition-colors"
+                      onClick={() => router.push(`/creatives/diagnostico/${c.ad_id}`)}
+                    >
+                      <span className="text-xs font-bold text-muted-foreground w-5 shrink-0">#{idx + 1}</span>
+                      {c.thumbnail_url ? (
+                        <Image src={c.thumbnail_url} alt="" width={32} height={32} className="rounded object-cover shrink-0" unoptimized />
+                      ) : (
+                        <div className="flex h-8 w-8 items-center justify-center rounded bg-muted shrink-0">
+                          <ImageIcon className="h-3 w-3 text-muted-foreground" />
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <a
+                          href={selectedAccount ? getMetaAdsUrl(selectedAccount, c.ad_id) : '#'}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs font-medium truncate block text-primary hover:underline"
+                          onClick={(e) => e.stopPropagation()}
+                          title="Abrir no Meta Ads Manager"
+                        >
+                          {c.name}
+                          <ExternalLink className="inline-block ml-1 h-2.5 w-2.5 opacity-50" />
+                        </a>
+                        <div className="text-[10px] text-red-600 dark:text-red-400">
+                          {getWorstReason(c)}
+                        </div>
+                      </div>
+                      <StatusBadge status={c.status} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Trend charts */}
@@ -159,7 +378,6 @@ export default function CommandPage() {
           const chartData = dailyTotals.map(d => ({
             ...d,
             label: fmtDate(parseISO(d.date), 'dd/MM', { locale: ptBR }),
-            // Keep CPA as number or undefined (recharts skips undefined points)
             cpa: d.cpa != null ? d.cpa : undefined,
           }));
           const hasCpa = chartData.some(d => d.cpa !== undefined);
@@ -211,115 +429,88 @@ export default function CommandPage() {
           );
         })()}
 
-        {/* Table + Ranking side by side */}
-        <div className="flex flex-1 gap-4 overflow-hidden">
-          {/* Table - main area */}
-          <div className="flex-1 overflow-auto rounded-md border">
-            <Table>
-              <TableHeader className="sticky top-0 bg-background z-10">
-                <TableRow>
-                  <TableHead className="w-10"></TableHead>
-                  <TableHead>Criativo</TableHead>
-                  <TableHead className="text-right w-20">CTR</TableHead>
-                  <TableHead className="text-right w-20">Compras</TableHead>
-                  <TableHead className="text-right w-24">CPA</TableHead>
-                  <TableHead className="text-right w-20">Freq.</TableHead>
-                  <TableHead className="text-center w-28">Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {loading ? (
-                  Array.from({ length: 8 }).map((_, i) => (
-                    <TableRow key={i}>
-                      {Array.from({ length: 7 }).map((_, j) => (
-                        <TableCell key={j}><Skeleton className="h-5 w-full" /></TableCell>
-                      ))}
-                    </TableRow>
-                  ))
-                ) : creatives.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
-                      Nenhum criativo ativo com dados no periodo.
-                    </TableCell>
+        {/* Table — full width */}
+        <div className="rounded-md border overflow-auto">
+          <Table>
+            <TableHeader className="sticky top-0 bg-background z-10">
+              <TableRow>
+                <TableHead className="w-10"></TableHead>
+                <TableHead>Criativo</TableHead>
+                <TableHead className="text-right w-20">CTR</TableHead>
+                <TableHead className="text-right w-20">Compras</TableHead>
+                <TableHead className="text-right w-24">CPA</TableHead>
+                <TableHead className="text-right w-20">Freq.</TableHead>
+                <TableHead className="text-center w-28">Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loading ? (
+                Array.from({ length: 8 }).map((_, i) => (
+                  <TableRow key={i}>
+                    {Array.from({ length: 7 }).map((_, j) => (
+                      <TableCell key={j}><Skeleton className="h-5 w-full" /></TableCell>
+                    ))}
                   </TableRow>
-                ) : (
-                  creatives.map((c) => (
-                    <TableRow
-                      key={c.ad_id}
-                      className="cursor-pointer hover:bg-muted/50"
-                      onClick={() => router.push(`/creatives/diagnostico/${c.ad_id}`)}
-                    >
-                      <TableCell>
-                        {c.thumbnail_url ? (
-                          <Image src={c.thumbnail_url} alt="" width={32} height={32} className="rounded object-cover" unoptimized />
-                        ) : (
-                          <div className="flex h-8 w-8 items-center justify-center rounded bg-muted">
-                            <ImageIcon className="h-3 w-3 text-muted-foreground" />
-                          </div>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <div className="max-w-[250px]">
-                          <div className="text-sm font-medium truncate">{c.name}</div>
-                          <div className="text-xs text-muted-foreground truncate">{c.campaign_name}</div>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right text-sm font-mono">{formatPercent(c.ctr)}</TableCell>
-                      <TableCell className="text-right text-sm font-mono">{c.compras}</TableCell>
-                      <TableCell className="text-right text-sm font-mono">{formatCurrency(c.cpa)}</TableCell>
-                      <TableCell className="text-right text-sm font-mono">{c.frequency > 0 ? c.frequency.toFixed(1) : '-'}</TableCell>
-                      <TableCell className="text-center">
-                        <StatusBadge status={c.status} />
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </div>
-
-          {/* Ranking sidebar - Top 10 */}
-          {!loading && topCreatives.length > 0 && (
-            <div className="w-[380px] shrink-0 rounded-lg border bg-card p-3 overflow-auto">
-              <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-3">
-                <Trophy className="h-3.5 w-3.5" />
-                Top Criativos
-              </div>
-              <div className="flex flex-col gap-2">
-                {topCreatives.map((c, idx) => (
-                  <div
+                ))
+              ) : creatives.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
+                    Nenhum criativo ativo com dados no periodo.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                creatives.map((c) => (
+                  <TableRow
                     key={c.ad_id}
-                    className="flex items-center gap-2 rounded-md border px-2.5 py-2 cursor-pointer hover:bg-muted/50 transition-colors"
+                    className="cursor-pointer hover:bg-muted/50"
                     onClick={() => router.push(`/creatives/diagnostico/${c.ad_id}`)}
                   >
-                    <span className="text-xs font-bold text-muted-foreground w-4 shrink-0">#{idx + 1}</span>
-                    {c.thumbnail_url ? (
-                      <Image src={c.thumbnail_url} alt="" width={28} height={28} className="rounded object-cover shrink-0" unoptimized />
-                    ) : (
-                      <div className="flex h-7 w-7 items-center justify-center rounded bg-muted shrink-0">
-                        <ImageIcon className="h-3 w-3 text-muted-foreground" />
+                    <TableCell>
+                      {c.thumbnail_url ? (
+                        <Image src={c.thumbnail_url} alt="" width={32} height={32} className="rounded object-cover" unoptimized />
+                      ) : (
+                        <div className="flex h-8 w-8 items-center justify-center rounded bg-muted">
+                          <ImageIcon className="h-3 w-3 text-muted-foreground" />
+                        </div>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <div className="max-w-[250px]">
+                        <a
+                          href={selectedAccount ? getMetaAdsUrl(selectedAccount, c.ad_id) : '#'}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-sm font-medium truncate block text-primary hover:underline"
+                          onClick={(e) => e.stopPropagation()}
+                          title="Abrir no Meta Ads Manager"
+                        >
+                          {c.name}
+                          <ExternalLink className="inline-block ml-1 h-3 w-3 opacity-50" />
+                        </a>
+                        <div className="text-xs text-muted-foreground truncate">{c.campaign_name}</div>
                       </div>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-medium truncate">{c.name}</div>
-                      <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                        <span>{c.compras} compras</span>
-                        <span>&middot;</span>
-                        <span>{formatCurrency(c.cpa)}</span>
-                      </div>
-                    </div>
-                    <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-bold text-blue-700 dark:text-blue-400 shrink-0 uppercase tracking-wider">
-                      Top
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+                    </TableCell>
+                    <TableCell className="text-right text-sm font-mono">{formatPercent(c.ctr)}</TableCell>
+                    <TableCell className="text-right text-sm font-mono">{c.compras}</TableCell>
+                    <TableCell className="text-right text-sm font-mono">{formatCurrency(c.cpa)}</TableCell>
+                    <TableCell className="text-right text-sm font-mono">{c.frequency > 0 ? c.frequency.toFixed(1) : '-'}</TableCell>
+                    <TableCell className="text-center">
+                      <StatusBadge status={c.status} />
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
         </div>
       </div>
-    </>
   );
+}
+
+function TrendArrow({ trend }: { trend: TrendDir }) {
+  if (trend === 'up') return <TrendingUp className="h-3 w-3 text-emerald-600" />;
+  if (trend === 'down') return <TrendingDown className="h-3 w-3 text-red-500" />;
+  return <Minus className="h-3 w-3 text-muted-foreground" />;
 }
 
 function MetricBox({
@@ -328,12 +519,14 @@ function MetricBox({
   value,
   sub,
   loading,
+  trend,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   label: string;
   value: string;
   sub?: string;
   loading: boolean;
+  trend?: TrendDir;
 }) {
   return (
     <div className="rounded-lg border bg-card p-3">
@@ -344,7 +537,14 @@ function MetricBox({
       {loading ? (
         <Skeleton className="h-6 w-16" />
       ) : (
-        <div className="text-xl font-bold">{value}</div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-xl font-bold">{value}</span>
+          {trend && (
+            <span title="Comparado ao periodo anterior">
+              <TrendArrow trend={trend} />
+            </span>
+          )}
+        </div>
       )}
       {sub && <div className="text-xs text-muted-foreground mt-0.5">{sub}</div>}
     </div>

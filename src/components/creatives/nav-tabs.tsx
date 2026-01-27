@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { Crosshair, Search, Globe, GitCompare, Calendar } from 'lucide-react';
+import { Crosshair, Search, Globe, GitCompare, Calendar, Sparkles } from 'lucide-react';
 import { useAccount, type PeriodDays } from '@/components/creatives/account-context';
 import {
   Select,
@@ -18,6 +18,7 @@ const tabs = [
   { href: '/creatives/diagnostico', label: 'Diagnostico', icon: Search },
   { href: '/creatives/paginas', label: 'Paginas', icon: Globe },
   { href: '/creatives/alinhamento', label: 'Alinhamento', icon: GitCompare },
+  { href: '/creatives/destaques', label: 'Destaques', icon: Sparkles },
 ];
 
 const periodOptions: { value: PeriodDays; label: string }[] = [

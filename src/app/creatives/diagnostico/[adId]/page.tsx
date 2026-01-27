@@ -3,7 +3,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Image from 'next/image';
-import { NavTabs } from '@/components/creatives/nav-tabs';
 import { StatusBadge } from '@/components/creatives/status-badge';
 import { useAccount } from '@/components/creatives/account-context';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -165,9 +164,7 @@ export default function DiagnosticoDetailPage() {
   }
 
   return (
-    <>
-      <NavTabs />
-      <div className="flex flex-1 flex-col overflow-hidden px-6 py-4">
+      <div className="flex flex-1 flex-col px-6 py-4">
         {/* Back button + header */}
         <div className="flex items-center gap-3 mb-4">
           <Link href="/creatives">
@@ -335,7 +332,6 @@ export default function DiagnosticoDetailPage() {
           </table>
         </div>
       </div>
-    </>
   );
 }
 
