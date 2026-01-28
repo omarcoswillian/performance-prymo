@@ -7,6 +7,9 @@ import {
   type CreativeMetrics,
 } from '@/lib/decision-engine';
 import { formatCurrency, formatPercent } from '@/lib/format';
+import { createAdminClient } from '@/lib/supabase/admin';
+import { getGA4PropertyId, aggregateByPage } from '@/lib/ga4';
+import type { GA4PageRow } from '@/lib/ga4';
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
@@ -40,7 +43,10 @@ REGRAS ABSOLUTAS:
 - Linguagem operacional e acionável. Sem buzzwords, sem enrolação.
 - Cite nomes de criativos e campanhas específicas.
 - Use **negrito** para destacar números importantes.
-- Use bullets (- ) para listas.`;
+- Use bullets (- ) para listas.
+- Se dados de páginas (GA4) estiverem disponíveis, inclua uma seção "Performance de Páginas" entre as seções 4 e 5.
+- Na seção de páginas: destaque páginas com alta conversão, páginas com sessões altas mas conversão baixa (problema de narrativa), e páginas com sessões baixas (problema de tráfego/tracking).
+- Se dados de GA4 não estiverem disponíveis, mencione "dados de GA4 indisponíveis" e siga normalmente.`;
 
 interface GenerateRequest {
   ad_account_id: string;
@@ -228,7 +234,93 @@ export async function POST(request: NextRequest) {
           .filter((c) => c.compras === 0 && c.spend >= DEFAULT_SETTINGS.min_spend)
           .reduce((s, c) => s + c.spend, 0)
       ),
+      performance_paginas: null as unknown,
     };
+
+    // ── 3b. Fetch GA4 page data (if configured) ─────────────
+    try {
+      const ga4PropertyId = await getGA4PropertyId(ad_account_id);
+      if (ga4PropertyId) {
+        const adminDb = createAdminClient();
+        const { data: ga4Rows } = await adminDb
+          .from('ga4_page_daily')
+          .select('*')
+          .eq('ad_account_id', ad_account_id)
+          .gte('date', date_start)
+          .lte('date', date_end);
+
+        if (ga4Rows && ga4Rows.length > 0) {
+          const mapped: GA4PageRow[] = ga4Rows.map((r) => ({
+            date: r.date,
+            pagePath: r.page_path,
+            sessions: r.sessions,
+            engagedSessions: r.engaged_sessions,
+            engagementRate: parseFloat(r.engagement_rate),
+            avgEngagementTime: parseFloat(r.avg_engagement_time),
+            source: r.source || '',
+            medium: r.medium || '',
+            campaign: r.campaign || '',
+          }));
+
+          const aggregated = aggregateByPage(mapped);
+
+          const topByEngagement = [...aggregated]
+            .sort((a, b) => b.engagementRate - a.engagementRate)
+            .slice(0, 5)
+            .map((p) => ({
+              pagina: p.pagePath,
+              sessoes: p.sessions,
+              engage_rate: `${(p.engagementRate * 100).toFixed(1)}%`,
+              connect_rate: p.connectRate !== null ? `${p.connectRate.toFixed(1)}%` : 'N/A',
+              status: p.status,
+            }));
+
+          const lowEngagement = aggregated
+            .filter((p) => p.sessions >= 50 && p.engagementRate < 0.3)
+            .sort((a, b) => b.sessions - a.sessions)
+            .slice(0, 5)
+            .map((p) => ({
+              pagina: p.pagePath,
+              sessoes: p.sessions,
+              engage_rate: `${(p.engagementRate * 100).toFixed(1)}%`,
+              problema: 'sessoes altas, engajamento baixo (problema de narrativa)',
+            }));
+
+          const lowSessions = aggregated
+            .filter((p) => p.sessions < 10 && p.sessions > 0)
+            .slice(0, 5)
+            .map((p) => ({
+              pagina: p.pagePath,
+              sessoes: p.sessions,
+              problema: 'poucas sessoes (trafego ou tracking)',
+            }));
+
+          const travarPages = aggregated
+            .filter((p) => p.status === 'TRAVAR TRAFEGO')
+            .slice(0, 5)
+            .map((p) => ({
+              pagina: p.pagePath,
+              sessoes: p.sessions,
+              connect_rate: p.connectRate !== null ? `${p.connectRate.toFixed(1)}%` : 'N/A',
+              engage_rate: `${(p.engagementRate * 100).toFixed(1)}%`,
+              motivo: p.statusReason,
+            }));
+
+          contextJson.performance_paginas = {
+            total_paginas: aggregated.length,
+            paginas_ok: aggregated.filter((p) => p.status === 'OK').length,
+            paginas_atencao: aggregated.filter((p) => p.status === 'ATENCAO').length,
+            paginas_travar: aggregated.filter((p) => p.status === 'TRAVAR TRAFEGO').length,
+            top_por_engajamento: topByEngagement,
+            problema_narrativa: lowEngagement,
+            problema_trafego: lowSessions,
+            paginas_travar_trafego: travarPages,
+          };
+        }
+      }
+    } catch (ga4Err) {
+      console.warn('[Reports] GA4 data unavailable:', ga4Err);
+    }
 
     const userPrompt = `Gere o relatório para o cliente "${client_name || ad_account_id}" com base nos dados abaixo.
 

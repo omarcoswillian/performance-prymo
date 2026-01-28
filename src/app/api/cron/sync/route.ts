@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { runFullSync } from '@/lib/meta/sync';
 import { checkAlerts } from '@/lib/meta/alerts';
+import { syncGA4ForAccount } from '@/lib/ga4';
 import { format, subDays } from 'date-fns';
 
 /**
@@ -62,6 +63,14 @@ export async function GET(request: NextRequest) {
       );
 
       await checkAlerts(account.ad_account_id);
+
+      // Sync GA4 data (D-1) if configured
+      try {
+        const yesterday = format(subDays(now, 1), 'yyyy-MM-dd');
+        await syncGA4ForAccount(account.ad_account_id, yesterday, yesterday);
+      } catch (ga4Err) {
+        console.warn(`[Cron] GA4 sync skipped for ${account.ad_account_id}:`, ga4Err);
+      }
 
       results.push({
         ad_account_id: account.ad_account_id,
