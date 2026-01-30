@@ -167,6 +167,7 @@ export default function DestaquesPage() {
   }, [selectedAccount, dateStart, dateEnd]);
 
   useEffect(() => {
+    setCreatives([]);
     fetchData();
   }, [fetchData]);
 
@@ -265,14 +266,14 @@ export default function DestaquesPage() {
           <InsightBlock
             icon={Trophy}
             title="Melhores Criativos"
-            subtitle="Mais compras com menor CPA"
+            subtitle="Mais vendas com menor CPA"
             ctaLabel="Ver no Painel de Comando"
             ctaHref="/creatives"
             loading={loading}
-            emptyText="Nenhum criativo com compras no periodo."
+            emptyText="Nenhum criativo com vendas no periodo."
             items={melhores.map((c) =>
               toItem(c, [
-                `${c.compras} compras`,
+                `${c.compras} vendas`,
                 formatCurrency(c.cpa),
                 `CTR ${formatPercent(c.ctr)}`,
               ])
@@ -292,7 +293,7 @@ export default function DestaquesPage() {
               toItem(c, [
                 `R$${c.spend.toFixed(2)} gasto`,
                 c.compras === 0
-                  ? '0 compras'
+                  ? '0 vendas'
                   : `CPA ${formatCurrency(c.cpa)}`,
                 `CTR ${formatPercent(c.ctr)}`,
               ])
@@ -313,7 +314,7 @@ export default function DestaquesPage() {
                 c.clicks > 0 ? ((c.compras / c.clicks) * 100).toFixed(2) : '0';
               return toItem(c, [
                 `${c.clicks} cliques`,
-                `${c.compras} compras`,
+                `${c.compras} vendas`,
                 `Conv. ${convRate}%`,
               ]);
             })}
@@ -332,7 +333,7 @@ export default function DestaquesPage() {
               toItem(c, [
                 `CTR ${formatPercent(c.ctr)}`,
                 c.compras === 0
-                  ? '0 compras'
+                  ? '0 vendas'
                   : `CPA ${formatCurrency(c.cpa)}`,
                 `R$${c.spend.toFixed(2)} gasto`,
               ])
@@ -352,7 +353,7 @@ export default function DestaquesPage() {
               const rate = ((c.compras / c.clicks) * 100).toFixed(2);
               return toItem(c, [
                 `${rate}% conv.`,
-                `${c.compras} compras`,
+                `${c.compras} vendas`,
                 `${c.clicks} cliques`,
               ]);
             })}

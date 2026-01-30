@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { verifyAccountOwnership } from '@/lib/verify-account';
 
 /**
  * GET /api/meta/insights
@@ -21,6 +22,7 @@ export async function GET(request: NextRequest) {
     const dateStart = params.get('date_start');
     const dateEnd = params.get('date_end');
     const type = params.get('type') || 'command';
+    const debug = params.get('debug') === 'true';
 
     if (!adAccountId || !dateStart || !dateEnd) {
       return NextResponse.json(
@@ -29,116 +31,104 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    const ownership = await verifyAccountOwnership(supabase, user.id, adAccountId);
+    if (!ownership) {
+      return NextResponse.json({ error: 'Conta não pertence ao usuário' }, { status: 403 });
+    }
+
     switch (type) {
       case 'command': {
-        // Dash 1: Get all active creatives with aggregated metrics
-        const { data: ads, error: adsError } = await supabase
-          .from('meta_ads')
-          .select('ad_id, name, thumbnail_url, format, campaign_id, adset_id, status')
-          .eq('ad_account_id', adAccountId)
-          .eq('status', 'ACTIVE');
+        // Use SQL RPCs to aggregate in the database, avoiding PostgREST 1000-row limit.
+        const [byAdResult, dailyResult] = await Promise.all([
+          supabase.rpc('get_insights_by_ad', {
+            p_ad_account_id: adAccountId,
+            p_date_start: dateStart,
+            p_date_end: dateEnd,
+          }),
+          supabase.rpc('get_insights_daily_totals', {
+            p_ad_account_id: adAccountId,
+            p_date_start: dateStart,
+            p_date_end: dateEnd,
+          }),
+        ]);
 
-        if (adsError) {
-          console.error('[Insights command] adsError:', adsError.message, adsError.code, adsError.details);
-          return NextResponse.json({ error: adsError.message }, { status: 500 });
+        if (byAdResult.error) {
+          console.error('[Insights command] RPC error:', byAdResult.error.message);
+          return NextResponse.json({ error: byAdResult.error.message }, { status: 500 });
         }
 
-        if (!ads || ads.length === 0) {
-          return NextResponse.json({ creatives: [], ctr_benchmark: 0 });
-        }
+        const adsData: Array<{
+          ad_id: string; impressions: number; clicks: number;
+          spend: number; conversions: number; name: string;
+          thumbnail_url: string | null; format: string;
+          campaign_id: string; adset_id: string; status: string;
+        }> = byAdResult.data || [];
 
-        // Get insights for each ad
-        const adIds = ads.map(a => a.ad_id);
-        const { data: insights, error: insError } = await supabase
-          .from('meta_ad_insights_daily')
-          .select('ad_id, date, impressions, clicks, spend, conversions, cpm, cpc, ctr')
-          .eq('ad_account_id', adAccountId)
-          .in('ad_id', adIds)
-          .gte('date', dateStart)
-          .lte('date', dateEnd);
-
-        if (insError) {
-          console.error('[Insights command] insError:', insError.message, insError.code, insError.details);
-          return NextResponse.json({ error: insError.message }, { status: 500 });
-        }
-
-        // Get campaign names
-        const campaignIds = [...new Set(ads.map(a => a.campaign_id))];
-        const { data: campaigns } = await supabase
-          .from('meta_campaigns')
-          .select('campaign_id, name')
-          .eq('ad_account_id', adAccountId)
-          .in('campaign_id', campaignIds);
+        // Get campaign names for enrichment
+        const campaignIds = [...new Set(adsData.map(a => a.campaign_id).filter(Boolean))];
+        const { data: campaigns } = campaignIds.length > 0
+          ? await supabase
+              .from('meta_campaigns')
+              .select('campaign_id, name')
+              .eq('ad_account_id', adAccountId)
+              .in('campaign_id', campaignIds)
+          : { data: [] };
 
         const campaignMap = new Map(
           (campaigns || []).map(c => [c.campaign_id, c.name])
         );
 
-        // Aggregate per ad
-        const insightsByAd = new Map<string, typeof insights>();
-        for (const row of (insights || [])) {
-          if (!insightsByAd.has(row.ad_id)) insightsByAd.set(row.ad_id, []);
-          insightsByAd.get(row.ad_id)!.push(row);
+        const creatives = adsData.map(ad => {
+          const imp = Number(ad.impressions);
+          const clk = Number(ad.clicks);
+          const spd = Number(ad.spend);
+          const conv = Number(ad.conversions);
+          return {
+            ad_id: ad.ad_id,
+            name: ad.name,
+            thumbnail_url: ad.thumbnail_url,
+            format: ad.format,
+            campaign_id: ad.campaign_id,
+            campaign_name: ad.campaign_id ? (campaignMap.get(ad.campaign_id) || ad.campaign_id) : '',
+            status: ad.status,
+            ctr: imp > 0 ? (clk / imp * 100) : 0,
+            compras: conv,
+            cpa: conv > 0 ? spd / conv : null,
+            frequency: 0,
+            spend: spd,
+            impressions: imp,
+            clicks: clk,
+            cpc: clk > 0 ? spd / clk : null,
+            cpm: imp > 0 ? (spd / imp * 1000) : null,
+          };
+        });
+
+        const daily_totals: Array<{
+          date: string; impressions: number; clicks: number;
+          spend: number; conversions: number; cpa: number | null; ctr: number;
+        }> = (dailyResult.data || []).map((d: Record<string, unknown>) => ({
+          date: d.date as string,
+          impressions: Number(d.impressions),
+          clicks: Number(d.clicks),
+          spend: Number(d.spend),
+          conversions: Number(d.conversions),
+          cpa: d.cpa != null ? Number(d.cpa) : null,
+          ctr: Number(d.ctr || 0),
+        }));
+
+        const response: Record<string, unknown> = { creatives, daily_totals };
+        if (debug) {
+          response._debug = {
+            ad_account_id: adAccountId,
+            date_start: dateStart,
+            date_end: dateEnd,
+            total_ads_with_data: adsData.length,
+            total_conversions_raw: adsData.reduce((s, a) => s + Number(a.conversions), 0),
+            total_spend_raw: adsData.reduce((s, a) => s + Number(a.spend), 0),
+            days_with_data: daily_totals.length,
+          };
         }
-
-        const creatives = ads
-          .map(ad => {
-            const rows = insightsByAd.get(ad.ad_id) || [];
-            const totalImpressions = rows.reduce((s, r) => s + (r.impressions || 0), 0);
-            const totalClicks = rows.reduce((s, r) => s + (r.clicks || 0), 0);
-            const totalSpend = rows.reduce((s, r) => s + Number(r.spend || 0), 0);
-            const totalConversions = rows.reduce((s, r) => s + (r.conversions || 0), 0);
-            // frequency column may not exist yet (migration 002 pending)
-            const avgFrequency = rows.length > 0
-              ? rows.reduce((s, r) => s + Number((r as Record<string, unknown>).frequency || 0), 0) / rows.length
-              : 0;
-
-            return {
-              ad_id: ad.ad_id,
-              name: ad.name,
-              thumbnail_url: ad.thumbnail_url,
-              format: ad.format,
-              campaign_id: ad.campaign_id,
-              campaign_name: campaignMap.get(ad.campaign_id) || ad.campaign_id,
-              ctr: totalImpressions > 0 ? (totalClicks / totalImpressions * 100) : 0,
-              compras: totalConversions,
-              cpa: totalConversions > 0 ? totalSpend / totalConversions : null,
-              frequency: avgFrequency,
-              spend: totalSpend,
-              impressions: totalImpressions,
-              clicks: totalClicks,
-              cpc: totalClicks > 0 ? totalSpend / totalClicks : null,
-              cpm: totalImpressions > 0 ? (totalSpend / totalImpressions * 1000) : null,
-            };
-          })
-          .filter(c => c.impressions > 0)
-          .sort((a, b) => b.spend - a.spend);
-
-        // Daily totals for trend charts
-        const dailyMap = new Map<string, { impressions: number; clicks: number; spend: number; conversions: number }>();
-        for (const row of (insights || [])) {
-          const d = row.date;
-          if (!d) continue;
-          const existing = dailyMap.get(d) || { impressions: 0, clicks: 0, spend: 0, conversions: 0 };
-          existing.impressions += row.impressions || 0;
-          existing.clicks += row.clicks || 0;
-          existing.spend += Number(row.spend || 0);
-          existing.conversions += row.conversions || 0;
-          dailyMap.set(d, existing);
-        }
-        const daily_totals = Array.from(dailyMap.entries())
-          .map(([date, m]) => ({
-            date,
-            impressions: m.impressions,
-            clicks: m.clicks,
-            spend: m.spend,
-            conversions: m.conversions,
-            cpa: m.conversions > 0 ? m.spend / m.conversions : null,
-            ctr: m.impressions > 0 ? (m.clicks / m.impressions) * 100 : 0,
-          }))
-          .sort((a, b) => a.date.localeCompare(b.date));
-
-        return NextResponse.json({ creatives, daily_totals });
+        return NextResponse.json(response);
       }
 
       case 'diagnostic': {
@@ -163,7 +153,8 @@ export async function GET(request: NextRequest) {
           .eq('ad_id', adId)
           .gte('date', dateStart)
           .lte('date', dateEnd)
-          .order('date', { ascending: true });
+          .order('date', { ascending: true })
+          .limit(10000);
 
         // Get campaign/adset names
         let campaignName = '';

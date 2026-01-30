@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { syncGA4ForAccount } from '@/lib/ga4';
+import { verifyAccountOwnership } from '@/lib/verify-account';
 
 export async function POST(request: NextRequest) {
   try {
@@ -24,15 +25,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify ownership
-    const { data: account } = await supabase
-      .from('meta_accounts')
-      .select('ad_account_id')
-      .eq('ad_account_id', ad_account_id)
-      .single();
-
+    const account = await verifyAccountOwnership(supabase, user.id, ad_account_id);
     if (!account) {
-      return NextResponse.json({ error: 'Conta nao encontrada' }, { status: 403 });
+      return NextResponse.json({ error: 'Conta nao encontrada ou sem permissao' }, { status: 403 });
     }
 
     const rowsSynced = await syncGA4ForAccount(ad_account_id, start, end);

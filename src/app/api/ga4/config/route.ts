@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { verifyAccountOwnership } from '@/lib/verify-account';
 
 export async function GET(request: NextRequest) {
   try {
@@ -16,6 +17,12 @@ export async function GET(request: NextRequest) {
     const adAccountId = request.nextUrl.searchParams.get('ad_account_id');
     if (!adAccountId) {
       return NextResponse.json({ error: 'ad_account_id obrigatorio' }, { status: 400 });
+    }
+
+    // Verify user owns this account
+    const account = await verifyAccountOwnership(supabase, user.id, adAccountId);
+    if (!account) {
+      return NextResponse.json({ error: 'Conta nao encontrada ou sem permissao' }, { status: 403 });
     }
 
     const { data } = await supabase
@@ -54,21 +61,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify ownership
-    const { data: account } = await supabase
-      .from('meta_accounts')
-      .select('ad_account_id')
-      .eq('ad_account_id', ad_account_id)
-      .single();
-
+    // Verify user owns this account
+    const account = await verifyAccountOwnership(supabase, user.id, ad_account_id);
     if (!account) {
-      return NextResponse.json({ error: 'Conta nao encontrada' }, { status: 403 });
+      return NextResponse.json({ error: 'Conta nao encontrada ou sem permissao' }, { status: 403 });
     }
 
     const { error } = await supabase
       .from('ga4_configs')
       .upsert(
-        { ad_account_id, ga4_property_id, updated_at: new Date().toISOString() },
+        {
+          ad_account_id,
+          ga4_property_id,
+          updated_at: new Date().toISOString(),
+        },
         { onConflict: 'ad_account_id' }
       );
 

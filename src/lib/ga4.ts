@@ -1,4 +1,5 @@
 import { BetaAnalyticsDataClient } from '@google-analytics/data';
+import { AnalyticsAdminServiceClient } from '@google-analytics/admin';
 import { createAdminClient } from '@/lib/supabase/admin';
 
 // ── Types ────────────────────────────────────────────────────
@@ -6,6 +7,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 export interface GA4PageRow {
   date: string;
   pagePath: string;
+  hostname: string;
   sessions: number;
   engagedSessions: number;
   engagementRate: number;
@@ -94,14 +96,91 @@ function getClient(): BetaAnalyticsDataClient {
   return _client;
 }
 
+// ── List GA4 Properties (Admin API) ──────────────────────────
+
+let _adminClient: AnalyticsAdminServiceClient | null = null;
+
+function getAdminClient(): AnalyticsAdminServiceClient {
+  if (_adminClient) return _adminClient;
+
+  const clientEmail = process.env.GA4_CLIENT_EMAIL;
+  const privateKey = process.env.GA4_PRIVATE_KEY?.replace(/\\n/g, '\n');
+
+  if (!clientEmail || !privateKey) {
+    throw new Error('GA4_CLIENT_EMAIL and GA4_PRIVATE_KEY must be set');
+  }
+
+  _adminClient = new AnalyticsAdminServiceClient({
+    credentials: {
+      client_email: clientEmail,
+      private_key: privateKey,
+    },
+  });
+
+  return _adminClient;
+}
+
+export interface GA4Property {
+  propertyId: string;
+  displayName: string;
+}
+
+export async function listGA4Properties(): Promise<GA4Property[]> {
+  const client = getAdminClient();
+  const properties: GA4Property[] = [];
+
+  try {
+    const [accounts] = await client.listAccountSummaries({});
+    for (const account of accounts || []) {
+      for (const prop of account.propertySummaries || []) {
+        if (prop.property && prop.displayName) {
+          // prop.property is "properties/123456789"
+          const id = prop.property.replace('properties/', '');
+          properties.push({
+            propertyId: id,
+            displayName: prop.displayName,
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[GA4] Failed to list properties:', err instanceof Error ? err.message : err);
+  }
+
+  return properties;
+}
+
 // ── Fetch from GA4 API ───────────────────────────────────────
 
 export async function fetchGA4PageMetrics(
   propertyId: string,
   startDate: string,
-  endDate: string
+  endDate: string,
+  hostnames?: string[]
 ): Promise<GA4PageRow[]> {
   const client = getClient();
+
+  // Build dimension filter: restrict to known hostnames from Meta Ads landing pages
+  let dimensionFilter: Record<string, unknown> | undefined;
+  if (hostnames && hostnames.length === 1) {
+    dimensionFilter = {
+      filter: {
+        fieldName: 'hostName',
+        stringFilter: { matchType: 'EXACT' as const, value: hostnames[0] },
+      },
+    };
+  } else if (hostnames && hostnames.length > 1) {
+    dimensionFilter = {
+      orGroup: {
+        expressions: hostnames.map((h) => ({
+          filter: {
+            fieldName: 'hostName',
+            stringFilter: { matchType: 'EXACT' as const, value: h },
+          },
+        })),
+      },
+    };
+  }
 
   const [response] = await client.runReport({
     property: `properties/${propertyId}`,
@@ -109,6 +188,7 @@ export async function fetchGA4PageMetrics(
     dimensions: [
       { name: 'date' },
       { name: 'pagePath' },
+      { name: 'hostName' },
       { name: 'sessionSource' },
       { name: 'sessionMedium' },
       { name: 'sessionCampaignName' },
@@ -119,6 +199,7 @@ export async function fetchGA4PageMetrics(
       { name: 'engagementRate' },
       { name: 'averageSessionDuration' },
     ],
+    dimensionFilter: dimensionFilter,
     keepEmptyRows: false,
     limit: 10000,
   });
@@ -132,13 +213,14 @@ export async function fetchGA4PageMetrics(
     rows.push({
       date: dims[0]?.value || '',
       pagePath: dims[1]?.value || '',
+      hostname: dims[2]?.value || '',
       sessions: parseInt(mets[0]?.value || '0', 10),
       engagedSessions: parseInt(mets[1]?.value || '0', 10),
       engagementRate: parseFloat(mets[2]?.value || '0'),
       avgEngagementTime: parseFloat(mets[3]?.value || '0'),
-      source: dims[2]?.value || '(direct)',
-      medium: dims[3]?.value || '(none)',
-      campaign: dims[4]?.value || '(not set)',
+      source: dims[3]?.value || '(direct)',
+      medium: dims[4]?.value || '(none)',
+      campaign: dims[5]?.value || '(not set)',
     });
   }
 
@@ -147,9 +229,22 @@ export async function fetchGA4PageMetrics(
 
 // ── GA4 Property lookup ──────────────────────────────────────
 
+export interface GA4Config {
+  propertyId: string;
+  /** Hostnames auto-detected from Meta Ads landing pages for this account */
+  hostnames: string[];
+}
+
 export async function getGA4PropertyId(
   adAccountId: string
 ): Promise<string | null> {
+  const config = await getGA4Config(adAccountId);
+  return config?.propertyId || null;
+}
+
+export async function getGA4Config(
+  adAccountId: string
+): Promise<GA4Config | null> {
   const supabase = createAdminClient();
   const { data } = await supabase
     .from('ga4_configs')
@@ -157,7 +252,57 @@ export async function getGA4PropertyId(
     .eq('ad_account_id', adAccountId)
     .single();
 
-  return data?.ga4_property_id || null;
+  if (!data?.ga4_property_id) return null;
+
+  // ga4_property_id can be "propertyId" or "propertyId|hostname1,hostname2"
+  const raw = data.ga4_property_id;
+  const pipeIndex = raw.indexOf('|');
+  let propertyId: string;
+  let configuredHostnames: string[] = [];
+
+  if (pipeIndex > -1) {
+    propertyId = raw.substring(0, pipeIndex);
+    configuredHostnames = raw.substring(pipeIndex + 1).split(',').map((h: string) => h.trim()).filter(Boolean);
+  } else {
+    propertyId = raw;
+  }
+
+  // Use configured hostnames first, fallback to auto-detect from meta_creative_page_map
+  let hostnames = configuredHostnames;
+  if (hostnames.length === 0) {
+    hostnames = await detectHostnamesForAccount(adAccountId);
+  }
+
+  return {
+    propertyId,
+    hostnames,
+  };
+}
+
+/**
+ * Extracts unique hostnames from landing page URLs in meta_creative_page_map.
+ * This is the automatic link — no manual hostname config needed.
+ */
+async function detectHostnamesForAccount(adAccountId: string): Promise<string[]> {
+  const supabase = createAdminClient();
+  const { data: pageMap } = await supabase
+    .from('meta_creative_page_map')
+    .select('page_url')
+    .eq('ad_account_id', adAccountId);
+
+  if (!pageMap || pageMap.length === 0) return [];
+
+  const hostnameSet = new Set<string>();
+  for (const pm of pageMap) {
+    try {
+      const url = new URL(pm.page_url);
+      if (url.hostname) hostnameSet.add(url.hostname);
+    } catch {
+      // Skip invalid URLs
+    }
+  }
+
+  return Array.from(hostnameSet);
 }
 
 // ── Persist to Supabase ──────────────────────────────────────
@@ -266,6 +411,47 @@ export function aggregateByPage(
   return results.sort((a, b) => b.sessions - a.sessions);
 }
 
+// ── Realtime data from GA4 ───────────────────────────────────
+
+export interface GA4RealtimeData {
+  activeUsers: number;
+  activePages: number;
+  topPages: { pagePath: string; activeUsers: number }[];
+}
+
+export async function fetchGA4Realtime(
+  propertyId: string,
+  _hostnames?: string[]
+): Promise<GA4RealtimeData> {
+  const client = getClient();
+
+  // Note: GA4 Realtime API does not support hostName dimension filter.
+  // Filtering is not applied here — realtime data is property-wide.
+  const [response] = await client.runRealtimeReport({
+    property: `properties/${propertyId}`,
+    dimensions: [{ name: 'unifiedPagePathScreen' }],
+    metrics: [{ name: 'activeUsers' }],
+  });
+
+  const topPages: { pagePath: string; activeUsers: number }[] = [];
+  let totalActiveUsers = 0;
+
+  for (const row of response.rows || []) {
+    const pagePath = row.dimensionValues?.[0]?.value || '';
+    const users = parseInt(row.metricValues?.[0]?.value || '0', 10);
+    totalActiveUsers += users;
+    topPages.push({ pagePath, activeUsers: users });
+  }
+
+  topPages.sort((a, b) => b.activeUsers - a.activeUsers);
+
+  return {
+    activeUsers: totalActiveUsers,
+    activePages: topPages.length,
+    topPages: topPages.slice(0, 10),
+  };
+}
+
 // ── Full sync for an account ─────────────────────────────────
 
 export async function syncGA4ForAccount(
@@ -273,10 +459,10 @@ export async function syncGA4ForAccount(
   startDate: string,
   endDate: string
 ): Promise<number> {
-  const propertyId = await getGA4PropertyId(adAccountId);
-  if (!propertyId) return 0;
+  const config = await getGA4Config(adAccountId);
+  if (!config) return 0;
 
-  const rows = await fetchGA4PageMetrics(propertyId, startDate, endDate);
+  const rows = await fetchGA4PageMetrics(config.propertyId, startDate, endDate, config.hostnames);
   await persistGA4Data(adAccountId, rows);
   return rows.length;
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { verifyAccountOwnership } from '@/lib/verify-account';
 
 /**
  * GET /api/reports?ad_account_id=xxx
@@ -23,6 +24,12 @@ export async function GET(request: NextRequest) {
         { error: 'ad_account_id é obrigatório.' },
         { status: 400 }
       );
+    }
+
+    // Verify user owns this account
+    const account = await verifyAccountOwnership(supabase, user.id, adAccountId);
+    if (!account) {
+      return NextResponse.json({ error: 'Conta nao encontrada ou sem permissao' }, { status: 403 });
     }
 
     const reportType = request.nextUrl.searchParams.get('report_type');
@@ -52,8 +59,8 @@ export async function GET(request: NextRequest) {
 }
 
 /**
- * DELETE /api/reports?id=xxx
- * Deletes a single report by id.
+ * DELETE /api/reports?id=xxx&ad_account_id=xxx
+ * Deletes a single report by id, verifying ownership.
  */
 export async function DELETE(request: NextRequest) {
   try {
@@ -68,11 +75,36 @@ export async function DELETE(request: NextRequest) {
     }
 
     const reportId = request.nextUrl.searchParams.get('id');
+    const adAccountId = request.nextUrl.searchParams.get('ad_account_id');
     if (!reportId) {
       return NextResponse.json(
         { error: 'id do relatório é obrigatório.' },
         { status: 400 }
       );
+    }
+
+    // If ad_account_id provided, verify ownership. Otherwise, verify via the report itself.
+    if (adAccountId) {
+      const account = await verifyAccountOwnership(supabase, user.id, adAccountId);
+      if (!account) {
+        return NextResponse.json({ error: 'Sem permissao' }, { status: 403 });
+      }
+    } else {
+      // Fetch the report first to get its ad_account_id, then verify
+      const { data: report } = await supabase
+        .from('meta_reports')
+        .select('ad_account_id')
+        .eq('id', reportId)
+        .single();
+
+      if (!report) {
+        return NextResponse.json({ error: 'Relatorio nao encontrado' }, { status: 404 });
+      }
+
+      const account = await verifyAccountOwnership(supabase, user.id, report.ad_account_id);
+      if (!account) {
+        return NextResponse.json({ error: 'Sem permissao' }, { status: 403 });
+      }
     }
 
     const { error } = await supabase

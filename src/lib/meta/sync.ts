@@ -44,6 +44,12 @@ interface MetaAdResponse {
     title?: string;
     call_to_action_type?: string;
     object_type?: string;
+    object_url?: string;
+    link_url?: string;
+    object_story_spec?: {
+      link_data?: { link?: string };
+      video_data?: { call_to_action?: { value?: { link?: string } } };
+    };
   };
   preview_shareable_link?: string;
 }
@@ -129,13 +135,13 @@ export async function syncMetaStructure(
     if (adsetError) throw new Error(`Failed to upsert adsets: ${adsetError.message}`);
   }
 
-  // Sync ads with creative details
+  // Sync ads with creative details (including landing page URL fields)
   const ads = await metaApiFetchAll<MetaAdResponse>(
     `${adAccountId}/ads`,
     decryptedToken,
     {
       fields:
-        'id,adset_id,campaign_id,name,status,creative{id,thumbnail_url,image_url,body,title,call_to_action_type,object_type},preview_shareable_link',
+        'id,adset_id,campaign_id,name,status,creative{id,thumbnail_url,image_url,body,title,call_to_action_type,object_type,object_url,link_url,object_story_spec},preview_shareable_link',
     }
   );
 
@@ -168,11 +174,69 @@ export async function syncMetaStructure(
     }
   }
 
+  // Sync creative → page mapping (extract landing page URLs from ad creatives)
+  const pageMapRows: { ad_account_id: string; ad_id: string; page_url: string }[] = [];
+  for (const ad of ads) {
+    const url = extractLandingPageUrl(ad);
+    if (url) {
+      pageMapRows.push({
+        ad_account_id: adAccountId,
+        ad_id: ad.id,
+        page_url: url,
+      });
+    }
+  }
+
+  if (pageMapRows.length > 0) {
+    for (let i = 0; i < pageMapRows.length; i += 100) {
+      const chunk = pageMapRows.slice(i, i + 100);
+      const { error: mapError } = await supabase
+        .from('meta_creative_page_map')
+        .upsert(chunk, { onConflict: 'ad_account_id,ad_id,page_url' });
+
+      if (mapError) {
+        console.error(`[Sync] Failed to upsert page map (batch ${i}):`, mapError.message);
+      }
+    }
+  }
+
   return {
     campaigns: campaigns.length,
     adsets: adsets.length,
     ads: ads.length,
   };
+}
+
+/**
+ * Extracts the landing page URL from a Meta ad creative.
+ * Tries multiple fields in order of reliability.
+ */
+function extractLandingPageUrl(ad: MetaAdResponse): string | null {
+  const creative = ad.creative;
+  if (!creative) return null;
+
+  // Try direct URL fields first
+  const candidates = [
+    creative.object_url,
+    creative.link_url,
+    creative.object_story_spec?.link_data?.link,
+    creative.object_story_spec?.video_data?.call_to_action?.value?.link,
+  ];
+
+  for (const url of candidates) {
+    if (url && isValidHttpUrl(url)) return url;
+  }
+
+  return null;
+}
+
+function isValidHttpUrl(str: string): boolean {
+  try {
+    const url = new URL(str);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 function detectFormat(objectType?: string): string {

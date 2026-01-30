@@ -2,7 +2,7 @@
  * Report Generator — Transforms existing data into actionable text.
  *
  * Rules:
- * - Uses ONLY existing data (CTR, CPA, compras, conversions, status)
+ * - Uses ONLY existing data (CTR, CPA, vendas, conversions, status)
  * - Does NOT decide — explains and prioritizes
  * - Does NOT contradict the automatic status
  * - Language: objective, action-focused, no buzzwords
@@ -38,7 +38,7 @@ export function generateDailyReport(
       toScale.length > 0
         ? toScale.map(
             (c) =>
-              `${c.name} — ${c.compras} compras, CPA ${formatCurrency(c.cpa)}, CTR ${formatPercent(c.ctr)}`
+              `${c.name} — ${c.compras} vendas, CPA ${formatCurrency(c.cpa)}, CTR ${formatPercent(c.ctr)}`
           )
         : ['Nenhum criativo com status ESCALAR no periodo.'],
   });
@@ -67,7 +67,7 @@ export function generateDailyReport(
       title: 'Gasto sem retorno',
       items: wasted.map(
         (c) =>
-          `${c.name} — R$${c.spend.toFixed(2)} gasto, 0 compras, CTR ${formatPercent(c.ctr)}`
+          `${c.name} — R$${c.spend.toFixed(2)} gasto, 0 vendas, CTR ${formatPercent(c.ctr)}`
       ),
     });
   }
@@ -88,7 +88,7 @@ export function generateDailyReport(
       title: 'Oportunidades detectadas',
       items: opportunities.map(
         (c) =>
-          `${c.name} — CTR ${formatPercent(c.ctr)} (acima do benchmark), mas 0 compras. Investigar pagina de destino ou oferta.`
+          `${c.name} — CTR ${formatPercent(c.ctr)} (acima do benchmark), mas 0 vendas. Investigar pagina de destino ou oferta.`
       ),
     });
   }
@@ -105,7 +105,7 @@ export function generateDailyReport(
       title: 'Maiores taxas de conversao',
       items: convGems.map(
         (c) =>
-          `${c.name} — ${c.convRate.toFixed(2)}% conversao (${c.compras} compras de ${c.clicks} cliques)`
+          `${c.name} — ${c.convRate.toFixed(2)}% conversao (${c.compras} vendas de ${c.clicks} cliques)`
       ),
     });
   }
@@ -153,7 +153,7 @@ export function generateCreativeReport(
 
   if (creative.compras === 0 && creative.spend >= DEFAULT_SETTINGS.min_spend) {
     reasons.push(
-      `Gastou R$${creative.spend.toFixed(2)} sem nenhuma conversao`
+      `Gastou R$${creative.spend.toFixed(2)} sem nenhuma venda`
     );
   }
 
@@ -172,9 +172,9 @@ export function generateCreativeReport(
     creative.status === 'ESCALAR' ||
     (creative.compras > 0 && creative.ctr >= ctrBenchmark);
   const summary = isPositive
-    ? `Este criativo esta performando bem com ${creative.compras} compras e CTR de ${formatPercent(creative.ctr)}.`
+    ? `Este criativo esta performando bem com ${creative.compras} vendas e CTR de ${formatPercent(creative.ctr)}.`
     : creative.compras === 0
-      ? `Este criativo nao gerou compras com R$${creative.spend.toFixed(2)} investidos.`
+      ? `Este criativo nao gerou vendas com R$${creative.spend.toFixed(2)} investidos.`
       : `Este criativo tem metricas abaixo do esperado.`;
 
   // Decision explanation
@@ -240,16 +240,16 @@ export function generateFullReport(
   // ── 1. RESUMO GERAL ──
   const resumo: string[] = [
     `${creatives.length} criativos analisados no periodo.`,
-    `Investimento total: ${formatCurrency(totalSpend)}. Compras: ${totalCompras}. CTR medio: ${formatPercent(avgCtr)}.`,
+    `Investimento total: ${formatCurrency(totalSpend)}. Vendas: ${totalCompras}. CTR medio: ${formatPercent(avgCtr)}.`,
     avgCpa !== null
       ? `CPA medio da conta: ${formatCurrency(avgCpa)} (alvo: ${formatCurrency(settings.cpa_target)}).`
-      : `Sem compras suficientes para calcular CPA medio.`,
+      : `Sem vendas suficientes para calcular CPA medio.`,
     `Status: ${escalar.length} ESCALAR, ${variar.length} VARIAR, ${matar.length} MATAR${forcado.length > 0 ? `, ${forcado.length} FORÇADO` : ''}.`,
   ];
 
   if (wastedSpend > 0) {
     resumo.push(
-      `Gasto sem retorno: ${formatCurrency(wastedSpend)} em criativos com 0 compras.`
+      `Gasto sem retorno: ${formatCurrency(wastedSpend)} em criativos com 0 vendas.`
     );
   }
 
@@ -269,7 +269,7 @@ export function generateFullReport(
     );
     for (const c of topPerformers) {
       bom.push(
-        `  - ${c.name}: ${c.compras} compras, CPA ${formatCurrency(c.cpa)}, CTR ${formatPercent(c.ctr)}`
+        `  - ${c.name}: ${c.compras} vendas, CPA ${formatCurrency(c.cpa)}, CTR ${formatPercent(c.ctr)}`
       );
     }
   }
@@ -309,8 +309,8 @@ export function generateFullReport(
   if (healthyCampaigns.length > 0) {
     bom.push('Campanhas com boa performance:');
     for (const [name, items] of healthyCampaigns) {
-      const compras = items.reduce((s, c) => s + c.compras, 0);
-      bom.push(`  - ${name}: ${compras} compras, ${items.filter((c) => c.status === 'ESCALAR').length} criativos escalando`);
+      const totalVendas = items.reduce((s, c) => s + c.compras, 0);
+      bom.push(`  - ${name}: ${totalVendas} vendas, ${items.filter((c) => c.status === 'ESCALAR').length} criativos escalando`);
     }
   }
 
@@ -372,7 +372,7 @@ export function generateFullReport(
     .slice(0, 5);
 
   if (hookNoPurchase.length > 0) {
-    melhorar.push('Criativos com bom CTR mas 0 compras (possivel problema de pagina/oferta):');
+    melhorar.push('Criativos com bom CTR mas 0 vendas (possivel problema de pagina/oferta):');
     for (const c of hookNoPurchase) {
       melhorar.push(
         `  - ${c.name}: CTR ${formatPercent(c.ctr)}, ${formatCurrency(c.spend)} gasto`
@@ -394,7 +394,7 @@ export function generateFullReport(
     );
     for (const c of highCpa) {
       melhorar.push(
-        `  - ${c.name}: CPA ${formatCurrency(c.cpa)}, ${c.compras} compras`
+        `  - ${c.name}: CPA ${formatCurrency(c.cpa)}, ${c.compras} vendas`
       );
     }
   }
@@ -411,7 +411,7 @@ export function generateFullReport(
   // Scale recommendations
   if (escalar.length > 0) {
     sugestoes.push(
-      `ESCALAR: Aumentar investimento nos ${escalar.length} criativo(s) com status ESCALAR. Priorizar os com menor CPA e maior volume de compras.`
+      `ESCALAR: Aumentar investimento nos ${escalar.length} criativo(s) com status ESCALAR. Priorizar os com menor CPA e maior volume de vendas.`
     );
   }
 
@@ -495,14 +495,14 @@ export function generateAlignmentReport(
     if (withPurchases.length > 0) {
       const best = withPurchases.sort((a, b) => b.compras - a.compras)[0];
       details.push(
-        `Melhor criativo: ${best.name} (${best.compras} compras, CPA ${formatCurrency(best.cpa)})`
+        `Melhor criativo: ${best.name} (${best.compras} vendas, CPA ${formatCurrency(best.cpa)})`
       );
     }
 
     if (withoutPurchases.length > 0) {
       const worst = withoutPurchases.sort((a, b) => b.spend - a.spend)[0];
       details.push(
-        `Maior gasto sem retorno: ${worst.name} (R$${worst.spend.toFixed(2)} gasto, 0 compras)`
+        `Maior gasto sem retorno: ${worst.name} (R$${worst.spend.toFixed(2)} gasto, 0 vendas)`
       );
     }
 
@@ -516,9 +516,9 @@ export function generateAlignmentReport(
     } else if (killCount > scaleCount && killCount > 0) {
       insight = `Maioria dos criativos com performance ruim (${killCount} para matar vs ${scaleCount} para escalar).`;
     } else if (scaleCount > 0 && killCount === 0) {
-      insight = `Campanha saudavel. ${scaleCount} criativos escalando, ${totalCompras} compras totais.`;
+      insight = `Campanha saudavel. ${scaleCount} criativos escalando, ${totalCompras} vendas totais.`;
     } else {
-      insight = `Performance mista. ${scaleCount} escalando, ${killCount} para matar. ${totalCompras} compras com R$${totalSpend.toFixed(2)} investidos.`;
+      insight = `Performance mista. ${scaleCount} escalando, ${killCount} para matar. ${totalCompras} vendas com R$${totalSpend.toFixed(2)} investidos.`;
     }
 
     if (details.length > 0 || insight) {

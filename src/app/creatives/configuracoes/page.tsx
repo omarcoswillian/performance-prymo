@@ -2,9 +2,31 @@
 
 import { DEFAULT_SETTINGS } from '@/lib/decision-engine';
 import { formatCurrency } from '@/lib/format';
-import { Settings, Globe, Check, Loader2 } from 'lucide-react';
+import { Settings, Globe, Check, Loader2, ChevronDown, RefreshCw, Share2 } from 'lucide-react';
 import { useAccount } from '@/components/creatives/account-context';
 import { useState, useEffect, useCallback } from 'react';
+
+declare global {
+  interface Window {
+    FB?: {
+      login: (cb: (response: { authResponse?: { accessToken: string } }) => void, opts: { scope: string }) => void;
+      getLoginStatus: (cb: (response: { status: string; authResponse?: { accessToken: string } }) => void) => void;
+    };
+  }
+}
+
+interface MetaAccount {
+  id: string;
+  ad_account_id: string;
+  name: string;
+  status: string;
+  token_expires_at: string | null;
+}
+
+interface GA4Property {
+  propertyId: string;
+  displayName: string;
+}
 
 const settingsDisplay = [
   { label: 'CPA Alvo', value: formatCurrency(DEFAULT_SETTINGS.cpa_target) },
@@ -18,9 +40,31 @@ const settingsDisplay = [
 export default function ConfiguracoesPage() {
   const { selectedAccount } = useAccount();
   const [ga4PropertyId, setGa4PropertyId] = useState('');
+  const [ga4Hostname, setGa4Hostname] = useState('');
   const [ga4Saved, setGa4Saved] = useState(false);
   const [ga4Loading, setGa4Loading] = useState(false);
   const [ga4Saving, setGa4Saving] = useState(false);
+  const [ga4Properties, setGa4Properties] = useState<GA4Property[]>([]);
+  const [propertiesLoading, setPropertiesLoading] = useState(false);
+
+  // Load available GA4 properties from server (auto-detect)
+  useEffect(() => {
+    async function loadProperties() {
+      setPropertiesLoading(true);
+      try {
+        const res = await fetch('/api/ga4/properties');
+        if (res.ok) {
+          const data = await res.json();
+          setGa4Properties(data.properties || []);
+        }
+      } catch {
+        // ignore — fallback to manual input
+      } finally {
+        setPropertiesLoading(false);
+      }
+    }
+    loadProperties();
+  }, []);
 
   const loadGA4Config = useCallback(async () => {
     if (!selectedAccount) return;
@@ -30,7 +74,15 @@ export default function ConfiguracoesPage() {
       if (res.ok) {
         const data = await res.json();
         if (data.ga4_property_id) {
-          setGa4PropertyId(data.ga4_property_id);
+          const raw = data.ga4_property_id as string;
+          const pipeIdx = raw.indexOf('|');
+          if (pipeIdx > -1) {
+            setGa4PropertyId(raw.substring(0, pipeIdx));
+            setGa4Hostname(raw.substring(pipeIdx + 1));
+          } else {
+            setGa4PropertyId(raw);
+            setGa4Hostname('');
+          }
           setGa4Saved(true);
         }
       }
@@ -43,6 +95,7 @@ export default function ConfiguracoesPage() {
 
   useEffect(() => {
     setGa4PropertyId('');
+    setGa4Hostname('');
     setGa4Saved(false);
     loadGA4Config();
   }, [loadGA4Config]);
@@ -51,12 +104,17 @@ export default function ConfiguracoesPage() {
     if (!selectedAccount || !ga4PropertyId.trim()) return;
     setGa4Saving(true);
     try {
+      // Compose value: "propertyId" or "propertyId|hostname1,hostname2"
+      let value = ga4PropertyId.trim();
+      if (ga4Hostname.trim()) {
+        value += '|' + ga4Hostname.trim();
+      }
       const res = await fetch('/api/ga4/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ad_account_id: selectedAccount,
-          ga4_property_id: ga4PropertyId.trim(),
+          ga4_property_id: value,
         }),
       });
       if (res.ok) {
@@ -67,9 +125,138 @@ export default function ConfiguracoesPage() {
     }
   };
 
+  // Meta accounts state
+  const [metaAccounts, setMetaAccounts] = useState<MetaAccount[]>([]);
+  const [metaLoading, setMetaLoading] = useState(false);
+  const [metaReconnecting, setMetaReconnecting] = useState(false);
+  const [metaMessage, setMetaMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  useEffect(() => {
+    async function loadMetaAccounts() {
+      setMetaLoading(true);
+      try {
+        const res = await fetch('/api/meta/accounts');
+        if (res.ok) {
+          const data = await res.json();
+          setMetaAccounts(data.accounts || []);
+        }
+      } catch {
+        // ignore
+      } finally {
+        setMetaLoading(false);
+      }
+    }
+    loadMetaAccounts();
+  }, []);
+
+  const handleReconnectMeta = () => {
+    if (!window.FB) {
+      setMetaMessage({ type: 'error', text: 'Facebook SDK nao carregado. Recarregue a pagina.' });
+      return;
+    }
+    setMetaReconnecting(true);
+    setMetaMessage(null);
+
+    window.FB.login(async (response) => {
+      if (!response.authResponse?.accessToken) {
+        setMetaReconnecting(false);
+        setMetaMessage({ type: 'error', text: 'Login cancelado ou sem permissao.' });
+        return;
+      }
+      try {
+        const res = await fetch('/api/meta/auth/callback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            access_token: response.authResponse.accessToken,
+            renew_all: true,
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          setMetaMessage({ type: 'success', text: `Token renovado para ${data.renewed} conta(s). Expira em ${new Date(data.token_expires_at).toLocaleDateString('pt-BR')}.` });
+          // Reload accounts to reflect new status
+          const acRes = await fetch('/api/meta/accounts');
+          if (acRes.ok) {
+            const acData = await acRes.json();
+            setMetaAccounts(acData.accounts || []);
+          }
+        } else {
+          setMetaMessage({ type: 'error', text: data.error || 'Erro ao renovar token.' });
+        }
+      } catch {
+        setMetaMessage({ type: 'error', text: 'Erro de rede ao reconectar.' });
+      } finally {
+        setMetaReconnecting(false);
+      }
+    }, { scope: 'ads_management,ads_read,business_management' });
+  };
+
+  const isTokenExpired = (expiresAt: string | null) => {
+    if (!expiresAt) return true;
+    return new Date(expiresAt) < new Date();
+  };
+
+  const selectedPropertyName = ga4Properties.find(p => p.propertyId === ga4PropertyId.split('|')[0])?.displayName;
+
   return (
     <div className="flex flex-1 flex-col px-6 py-4">
       <h1 className="text-xl font-bold mb-4">Configuracoes</h1>
+
+      {/* Meta Ads */}
+      <div className="rounded-lg border bg-card p-4 max-w-lg mb-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Share2 className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-medium">Meta Ads</span>
+        </div>
+
+        {metaLoading ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Carregando...
+          </div>
+        ) : metaAccounts.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Nenhuma conta Meta conectada.</p>
+        ) : (
+          <div className="space-y-2">
+            {metaAccounts.map((acc) => {
+              const expired = isTokenExpired(acc.token_expires_at);
+              return (
+                <div key={acc.id} className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">{acc.name}</span>
+                  <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${expired ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                    {expired ? 'Token Expirado' : 'Conectado'}
+                  </span>
+                </div>
+              );
+            })}
+            {metaAccounts[0]?.token_expires_at && !isTokenExpired(metaAccounts[0].token_expires_at) && (
+              <p className="text-xs text-muted-foreground">
+                Expira em {new Date(metaAccounts[0].token_expires_at).toLocaleDateString('pt-BR')}
+              </p>
+            )}
+          </div>
+        )}
+
+        {metaMessage && (
+          <p className={`mt-3 text-xs ${metaMessage.type === 'success' ? 'text-emerald-600' : 'text-red-600'}`}>
+            {metaMessage.text}
+          </p>
+        )}
+
+        <button
+          onClick={handleReconnectMeta}
+          disabled={metaReconnecting}
+          className="mt-4 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+        >
+          {metaReconnecting ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <RefreshCw className="h-4 w-4" />
+          )}
+          {metaReconnecting ? 'Reconectando...' : 'Reconectar Meta'}
+        </button>
+      </div>
 
       {/* GA4 Config */}
       <div className="rounded-lg border bg-card p-4 max-w-lg mb-6">
@@ -79,11 +266,14 @@ export default function ConfiguracoesPage() {
           {ga4Saved && (
             <span className="inline-flex items-center gap-1 text-xs text-emerald-600">
               <Check className="h-3 w-3" /> Configurado
+              {selectedPropertyName && (
+                <span className="text-muted-foreground ml-1">({selectedPropertyName})</span>
+              )}
             </span>
           )}
         </div>
 
-        {ga4Loading ? (
+        {ga4Loading || propertiesLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             Carregando...
@@ -93,20 +283,65 @@ export default function ConfiguracoesPage() {
             <div className="space-y-3">
               <div>
                 <label className="text-xs text-muted-foreground block mb-1">
-                  GA4 Property ID
+                  Propriedade GA4
+                </label>
+
+                {ga4Properties.length > 0 ? (
+                  /* Dropdown — auto-detected properties */
+                  <div className="relative">
+                    <select
+                      value={ga4PropertyId}
+                      onChange={(e) => {
+                        setGa4PropertyId(e.target.value);
+                        setGa4Saved(false);
+                      }}
+                      className="w-full appearance-none rounded-md border bg-background px-3 py-2 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    >
+                      <option value="">Selecione uma propriedade...</option>
+                      {ga4Properties.map((p) => (
+                        <option key={p.propertyId} value={p.propertyId}>
+                          {p.displayName} ({p.propertyId})
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-2.5 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none" />
+                  </div>
+                ) : (
+                  /* Fallback — manual input if no properties detected */
+                  <input
+                    type="text"
+                    value={ga4PropertyId}
+                    onChange={(e) => {
+                      setGa4PropertyId(e.target.value);
+                      setGa4Saved(false);
+                    }}
+                    placeholder="Ex: 123456789"
+                    className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                )}
+                <p className="text-xs text-muted-foreground mt-1">
+                  {ga4Properties.length > 0
+                    ? 'Propriedades detectadas automaticamente pela Service Account.'
+                    : 'Nenhuma propriedade detectada. Digite o Property ID manualmente.'}
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs text-muted-foreground block mb-1">
+                  Hostname do site (para isolamento de dados)
                 </label>
                 <input
                   type="text"
-                  value={ga4PropertyId}
+                  value={ga4Hostname}
                   onChange={(e) => {
-                    setGa4PropertyId(e.target.value);
+                    setGa4Hostname(e.target.value);
                     setGa4Saved(false);
                   }}
-                  placeholder="Ex: 123456789"
+                  placeholder="Ex: meusite.com.br"
                   className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 />
                 <p className="text-xs text-muted-foreground mt-1">
-                  Encontre em: GA4 &gt; Admin &gt; Property Settings &gt; Property ID
+                  Obrigatorio se a propriedade GA4 rastreia mais de um site. Separe multiplos com virgula.
                 </p>
               </div>
             </div>

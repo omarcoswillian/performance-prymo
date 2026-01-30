@@ -22,7 +22,6 @@ import {
   MousePointerClick,
   ShoppingCart,
   Target,
-  PointerIcon,
   Percent,
   Trophy,
   AlertTriangle,
@@ -167,7 +166,9 @@ export default function CommandPage() {
       await fetch('/api/meta/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ad_account_id: selectedAccount }),
+        body: JSON.stringify({
+          ad_account_id: selectedAccount,
+        }),
       });
       await fetchData();
     } finally {
@@ -175,13 +176,18 @@ export default function CommandPage() {
     }
   }, [selectedAccount, syncing, fetchData]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => {
+    // Clear stale data immediately when account/period changes
+    setCreatives([]);
+    setDailyTotals([]);
+    setPrevTotals(null);
+    fetchData();
+  }, [fetchData]);
 
   const countByStatus = (s: string) => creatives.filter(c => c.status === s).length;
 
   // Trend directions
   const ctrTrend = computeTrend(currentTotals.ctr, prevTotals?.ctr ?? null);
-  const clicksTrend = computeTrend(currentTotals.clicks, prevTotals?.clicks ?? null);
   const comprasTrend = computeTrend(currentTotals.compras, prevTotals?.compras ?? null);
   const convTrend = computeTrend(currentTotals.taxaConversao, prevTotals?.taxaConversao ?? null);
   const cpaTrend = computeTrend(currentTotals.cpa, prevTotals?.cpa ?? null, true);
@@ -218,7 +224,7 @@ export default function CommandPage() {
     .slice(0, 5);
 
   const getWorstReason = (c: CreativeWithDecision): string => {
-    if (c.compras === 0 && c.spend >= DEFAULT_SETTINGS.min_spend) return `R$${c.spend.toFixed(2)} gasto sem compras`;
+    if (c.compras === 0 && c.spend >= DEFAULT_SETTINGS.min_spend) return `R$${c.spend.toFixed(2)} gasto sem vendas`;
     if (c.cpa !== null && c.cpa > DEFAULT_SETTINGS.cpa_target * DEFAULT_SETTINGS.cpa_kill_multiplier) return `CPA ${formatCurrency(c.cpa)} > alvo`;
     return `CTR ${formatPercent(c.ctr)} abaixo`;
   };
@@ -241,12 +247,11 @@ export default function CommandPage() {
           </div>
         </div>
 
-        {/* 5 Metric cards with trend arrows */}
-        <div className="grid grid-cols-5 gap-3 mb-4">
+        {/* 4 Metric cards with trend arrows (Cliques movido para tabela) */}
+        <div className="grid grid-cols-4 gap-3 mb-4">
           <MetricBox icon={MousePointerClick} label="CTR" value={formatPercent(currentTotals.ctr)} sub={`Benchmark: ${formatPercent(ctrBenchmark)}`} loading={loading} trend={ctrTrend} />
-          <MetricBox icon={PointerIcon} label="Cliques" value={formatNumber(currentTotals.clicks)} loading={loading} trend={clicksTrend} />
-          <MetricBox icon={ShoppingCart} label="Compras" value={formatNumber(currentTotals.compras)} loading={loading} trend={comprasTrend} />
-          <MetricBox icon={Percent} label="Taxa Conv." value={formatPercent(currentTotals.taxaConversao)} sub={`${currentTotals.clicks} cliques → ${currentTotals.compras} conv.`} loading={loading} trend={convTrend} />
+          <MetricBox icon={ShoppingCart} label="Vendas" value={formatNumber(currentTotals.compras)} loading={loading} trend={comprasTrend} />
+          <MetricBox icon={Percent} label="Taxa Conv." value={formatPercent(currentTotals.taxaConversao)} sub={`${currentTotals.clicks} cliques → ${currentTotals.compras} vendas`} loading={loading} trend={convTrend} />
           <MetricBox icon={Target} label="CPA" value={formatCurrency(currentTotals.cpa)} sub={`Alvo: ${formatCurrency(DEFAULT_SETTINGS.cpa_target)}`} loading={loading} trend={cpaTrend} />
         </div>
 
@@ -268,7 +273,7 @@ export default function CommandPage() {
                 </div>
               ) : topCreatives.length === 0 ? (
                 <div className="py-8 text-center text-xs text-muted-foreground">
-                  Nenhum criativo com compras no periodo.
+                  Nenhum criativo com vendas no periodo.
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">
@@ -299,7 +304,7 @@ export default function CommandPage() {
                           <ExternalLink className="inline-block ml-1 h-2.5 w-2.5 opacity-50" />
                         </a>
                         <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                          <span>{c.compras} compras</span>
+                          <span>{c.compras} vendas</span>
                           <span>&middot;</span>
                           <span>{formatCurrency(c.cpa)}</span>
                           <span>&middot;</span>
@@ -385,14 +390,14 @@ export default function CommandPage() {
           return (
             <div className="grid grid-cols-2 gap-3 mb-4">
               <div className="rounded-lg border bg-card p-3">
-                <div className="text-xs font-medium text-muted-foreground mb-2">Compras por Dia</div>
+                <div className="text-xs font-medium text-muted-foreground mb-2">Vendas por Dia</div>
                 <ResponsiveContainer width="100%" height={120}>
                   <BarChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
                     <XAxis dataKey="label" fontSize={10} tickLine={false} axisLine={false} />
                     <YAxis fontSize={10} tickLine={false} axisLine={false} width={30} />
                     <Tooltip
-                      formatter={(v: number) => [v, 'Compras']}
+                      formatter={((v: number) => [v, 'Vendas']) as never}
                       labelFormatter={(l) => `Dia ${l}`}
                       contentStyle={{ fontSize: 12 }}
                     />
@@ -409,10 +414,10 @@ export default function CommandPage() {
                       <XAxis dataKey="label" fontSize={10} tickLine={false} axisLine={false} />
                       <YAxis fontSize={10} tickLine={false} axisLine={false} width={40} tickFormatter={(v) => `R$${v}`} domain={['auto', 'auto']} />
                       <Tooltip
-                        formatter={(v: number, name: string) => {
+                        formatter={((v: number, name: string) => {
                           if (name === 'CPA') return [formatCurrency(v), 'CPA'];
                           return [v, name];
-                        }}
+                        }) as never}
                         labelFormatter={(l) => `Dia ${l}`}
                         contentStyle={{ fontSize: 12 }}
                       />
@@ -437,7 +442,8 @@ export default function CommandPage() {
                 <TableHead className="w-10"></TableHead>
                 <TableHead>Criativo</TableHead>
                 <TableHead className="text-right w-20">CTR</TableHead>
-                <TableHead className="text-right w-20">Compras</TableHead>
+                <TableHead className="text-right w-20">Cliques</TableHead>
+                <TableHead className="text-right w-20">Vendas</TableHead>
                 <TableHead className="text-right w-24">CPA</TableHead>
                 <TableHead className="text-right w-20">Freq.</TableHead>
                 <TableHead className="text-center w-28">Status</TableHead>
@@ -447,14 +453,14 @@ export default function CommandPage() {
               {loading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <TableRow key={i}>
-                    {Array.from({ length: 7 }).map((_, j) => (
+                    {Array.from({ length: 8 }).map((_, j) => (
                       <TableCell key={j}><Skeleton className="h-5 w-full" /></TableCell>
                     ))}
                   </TableRow>
                 ))
               ) : creatives.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
+                  <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
                     Nenhum criativo ativo com dados no periodo.
                   </TableCell>
                 </TableRow>
@@ -491,6 +497,7 @@ export default function CommandPage() {
                       </div>
                     </TableCell>
                     <TableCell className="text-right text-sm font-mono">{formatPercent(c.ctr)}</TableCell>
+                    <TableCell className="text-right text-sm font-mono">{formatNumber(c.clicks)}</TableCell>
                     <TableCell className="text-right text-sm font-mono">{c.compras}</TableCell>
                     <TableCell className="text-right text-sm font-mono">{formatCurrency(c.cpa)}</TableCell>
                     <TableCell className="text-right text-sm font-mono">{c.frequency > 0 ? c.frequency.toFixed(1) : '-'}</TableCell>

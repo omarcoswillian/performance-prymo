@@ -26,10 +26,26 @@ export function decrypt(ciphertext: string): string {
   if (parts.length !== 3) {
     throw new Error('Invalid encrypted format');
   }
-  const [ivB64, tagB64, encB64] = parts;
-  const iv = Buffer.from(ivB64, 'base64');
-  const tag = Buffer.from(tagB64, 'base64');
-  const encrypted = Buffer.from(encB64, 'base64');
+
+  // Detect format: hex (iv:enc:tag) vs base64 (iv:tag:enc)
+  // Hex tokens have iv of 24 hex chars (12 bytes), base64 tokens have iv of 24 b64 chars (16+ bytes)
+  const isHex = /^[0-9a-f]+$/i.test(parts[0]);
+
+  let iv: Buffer, tag: Buffer, encrypted: Buffer;
+
+  if (isHex) {
+    // Format: iv:encrypted:tag (all hex)
+    const [ivHex, encHex, tagHex] = parts;
+    iv = Buffer.from(ivHex, 'hex');
+    tag = Buffer.from(tagHex, 'hex');
+    encrypted = Buffer.from(encHex, 'hex');
+  } else {
+    // Format: iv:tag:encrypted (all base64)
+    const [ivB64, tagB64, encB64] = parts;
+    iv = Buffer.from(ivB64, 'base64');
+    tag = Buffer.from(tagB64, 'base64');
+    encrypted = Buffer.from(encB64, 'base64');
+  }
 
   if (tag.length !== TAG_LENGTH) {
     throw new Error('Invalid auth tag');

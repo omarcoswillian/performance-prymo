@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, useCallback, useMemo, type ReactNode } from 'react';
 import { format, subDays, differenceInDays, parseISO } from 'date-fns';
+import { TZDate } from '@date-fns/tz';
 
 interface Account {
   id: string;
@@ -68,7 +69,8 @@ const PRESET_LABELS: Record<PeriodPreset, string> = {
 const VALID_PRESETS: PeriodPreset[] = ['today', 'yesterday', '7', '14', '30', 'custom'];
 
 function computeDates(preset: PeriodPreset, customStart: string, customEnd: string) {
-  const today = new Date();
+  // Use Brazil timezone to ensure "today" is correct for -03:00 users
+  const today = new TZDate(new Date(), 'America/Sao_Paulo');
   const todayStr = format(today, 'yyyy-MM-dd');
 
   let dateStart: string;

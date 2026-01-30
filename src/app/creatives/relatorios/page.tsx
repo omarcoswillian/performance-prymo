@@ -92,6 +92,8 @@ export default function RelatoriosPage() {
   }, [selectedAccount]);
 
   useEffect(() => {
+    setReports([]);
+    setSelectedReport(null);
     fetchReports();
   }, [fetchReports]);
 

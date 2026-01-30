@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { access_token: shortLivedToken, selected_account_id } = body;
+    const { access_token: shortLivedToken, selected_account_id, renew_all } = body;
 
     if (!shortLivedToken) {
       return NextResponse.json(
@@ -42,6 +42,38 @@ export async function POST(request: NextRequest) {
 
     // Get available ad accounts
     const adAccounts = await getAdAccounts(longLivedToken);
+
+    // Renew token for ALL existing accounts of this user
+    if (renew_all) {
+      const adminClient = createAdminClient();
+      const { data: existingAccounts } = await adminClient
+        .from('meta_accounts')
+        .select('ad_account_id')
+        .eq('user_id', user.id);
+
+      if (existingAccounts && existingAccounts.length > 0) {
+        const { error: updateError } = await adminClient
+          .from('meta_accounts')
+          .update({
+            access_token: encryptedToken,
+            token_expires_at: tokenExpiresAt,
+            status: 'active',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('user_id', user.id);
+
+        if (updateError) {
+          console.error('[Auth] Failed to renew tokens:', updateError);
+          return NextResponse.json({ error: 'Failed to renew tokens' }, { status: 500 });
+        }
+
+        return NextResponse.json({
+          success: true,
+          renewed: existingAccounts.length,
+          token_expires_at: tokenExpiresAt,
+        });
+      }
+    }
 
     if (selected_account_id) {
       // Connect a specific account

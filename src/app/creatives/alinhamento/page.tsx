@@ -199,7 +199,10 @@ export default function AlinhamentoPage() {
     }
   }, [selectedAccount, syncing, fetchData]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => {
+    setCreatives([]);
+    fetchData();
+  }, [fetchData]);
 
   const countByAlignment = (s: AlignmentStatus) => creatives.filter(c => getAlignmentStatus(c) === s).length;
 
@@ -291,10 +294,10 @@ export default function AlinhamentoPage() {
                     <RankingBlock
                       icon={Trophy}
                       title="Melhores nesta campanha"
-                      emptyText="Sem compras nesta campanha."
+                      emptyText="Sem vendas nesta campanha."
                       items={best.map((c) =>
                         toRankingItem(c, [
-                          `${c.compras} compras`,
+                          `${c.compras} vendas`,
                           formatCurrency(c.cpa),
                         ])
                       )}
@@ -307,7 +310,7 @@ export default function AlinhamentoPage() {
                         const rate = ((c.compras / c.clicks) * 100).toFixed(2);
                         return toRankingItem(c, [
                           `${rate}% conv.`,
-                          `${c.compras} compras`,
+                          `${c.compras} vendas`,
                         ]);
                       })}
                     />
@@ -358,7 +361,7 @@ export default function AlinhamentoPage() {
                 </th>
                 <th className="text-left px-3 py-2.5 font-medium">Pagina Destino</th>
                 <th className="text-right px-3 py-2.5 font-medium w-20">CTR</th>
-                <th className="text-right px-3 py-2.5 font-medium w-20">Compras</th>
+                <th className="text-right px-3 py-2.5 font-medium w-20">Vendas</th>
                 <th className="text-right px-3 py-2.5 font-medium w-24">CPA</th>
                 <th className="text-center px-3 py-2.5 font-medium w-32">Alinhamento</th>
               </tr>

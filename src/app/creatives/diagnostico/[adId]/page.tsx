@@ -217,7 +217,7 @@ export default function DiagnosticoDetailPage() {
         <div className="grid grid-cols-5 gap-3 mb-4">
           <DiagMetric label="CTR" value={formatPercent(ctr)} sub={`Conta: ${formatPercent(accountCtr)}`} loading={loading} />
           <DiagMetric label="Hook Rate" value={hookRate != null ? formatPercent(hookRate) : '-'} sub="Views 3s / Impr." loading={loading} />
-          <DiagMetric label="Compras" value={formatNumber(totalConversions)} loading={loading} />
+          <DiagMetric label="Vendas" value={formatNumber(totalConversions)} loading={loading} />
           <DiagMetric label="CPA" value={formatCurrency(cpa)} sub={`Alvo: ${formatCurrency(DEFAULT_SETTINGS.cpa_target)}`} loading={loading} />
           <DiagMetric
             label="Frequencia"
@@ -240,7 +240,7 @@ export default function DiagnosticoDetailPage() {
                   <XAxis dataKey="label" fontSize={10} tickLine={false} axisLine={false} />
                   <YAxis fontSize={10} tickLine={false} axisLine={false} width={35} tickFormatter={(v) => `${v}%`} />
                   <Tooltip
-                    formatter={(v: number, name: string) => [`${v.toFixed(2)}%`, name]}
+                    formatter={((v: number, name: string) => [`${v.toFixed(2)}%`, name]) as never}
                     contentStyle={{ fontSize: 12 }}
                   />
                   <Legend wrapperStyle={{ fontSize: 10 }} />
@@ -252,7 +252,7 @@ export default function DiagnosticoDetailPage() {
               </ResponsiveContainer>
             </div>
             <div className="rounded-lg border bg-card p-3">
-              <div className="text-xs font-medium text-muted-foreground mb-2">Cliques vs Conversoes por Dia</div>
+              <div className="text-xs font-medium text-muted-foreground mb-2">Cliques vs Vendas por Dia</div>
               <ResponsiveContainer width="100%" height={140}>
                 <BarChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
@@ -262,7 +262,7 @@ export default function DiagnosticoDetailPage() {
                   <Tooltip contentStyle={{ fontSize: 12 }} />
                   <Legend wrapperStyle={{ fontSize: 10 }} />
                   <Bar yAxisId="left" dataKey="clicks" name="Cliques" fill="hsl(var(--chart-3))" radius={[3, 3, 0, 0]} opacity={0.7} />
-                  <Bar yAxisId="right" dataKey="conversions" name="Conversoes" fill="hsl(var(--chart-2))" radius={[3, 3, 0, 0]} />
+                  <Bar yAxisId="right" dataKey="conversions" name="Vendas" fill="hsl(var(--chart-2))" radius={[3, 3, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

@@ -95,7 +95,7 @@ export function calculateStatus(
 
   // VARIAR (ajustar promessa): CTR bom + 0 compras + gasto suficiente
   if (ctrGood && compras === 0 && spend >= min_spend) {
-    return { status: 'VARIAR', reason: `CTR bom mas 0 compras com R$${spend.toFixed(2)} gasto - ajustar promessa` };
+    return { status: 'VARIAR', reason: `CTR bom mas 0 vendas com R$${spend.toFixed(2)} gasto - ajustar promessa` };
   }
 
   // ESCALAR: tudo bom
@@ -182,7 +182,7 @@ export function generateDiagnosticText(
   }
 
   if (creative.compras === 0 && creative.spend > settings.min_spend) {
-    parts.push(`gastou R$${creative.spend.toFixed(2)} sem conversoes`);
+    parts.push(`gastou R$${creative.spend.toFixed(2)} sem vendas`);
   }
 
   if (parts.length === 0) {

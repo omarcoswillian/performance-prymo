@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { getGA4PropertyId } from '@/lib/ga4';
+import { getGA4Config } from '@/lib/ga4';
+import { verifyAccountOwnership } from '@/lib/verify-account';
 
 export async function GET(request: NextRequest) {
   try {
@@ -27,26 +28,21 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Verify ownership
-    const { data: account } = await supabase
-      .from('meta_accounts')
-      .select('ad_account_id')
-      .eq('ad_account_id', adAccountId)
-      .single();
-
+    const account = await verifyAccountOwnership(supabase, user.id, adAccountId);
     if (!account) {
-      return NextResponse.json({ error: 'Conta nao encontrada' }, { status: 403 });
+      return NextResponse.json({ error: 'Conta nao encontrada ou sem permissao' }, { status: 403 });
     }
 
-    const propertyId = await getGA4PropertyId(adAccountId);
-    if (!propertyId) {
+    const ga4Config = await getGA4Config(adAccountId);
+    if (!ga4Config) {
       return NextResponse.json(
         { error: 'GA4 nao configurado.', code: 'GA4_NOT_CONFIGURED' },
         { status: 404 }
       );
     }
 
-    // Aggregate from cached data
+    // Aggregate from cached data — filtered by ad_account_id
+    // Note: hostname column may not exist yet (migration pending), so skip hostname filter on cache
     const admin = createAdminClient();
     const { data: rows } = await admin
       .from('ga4_page_daily')

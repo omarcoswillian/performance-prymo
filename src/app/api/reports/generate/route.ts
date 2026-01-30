@@ -8,7 +8,8 @@ import {
 } from '@/lib/decision-engine';
 import { formatCurrency, formatPercent } from '@/lib/format';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { getGA4PropertyId, aggregateByPage } from '@/lib/ga4';
+import { verifyAccountOwnership } from '@/lib/verify-account';
+import { getGA4Config, aggregateByPage } from '@/lib/ga4';
 import type { GA4PageRow } from '@/lib/ga4';
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -85,6 +86,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Verify user owns this account
+    const account = await verifyAccountOwnership(supabase, user.id, ad_account_id);
+    if (!account) {
+      return NextResponse.json({ error: 'Conta nao encontrada ou sem permissao' }, { status: 403 });
+    }
+
     // ── 1. Fetch creative data ──────────────────────────────────
     const { data: ads } = await supabase
       .from('meta_ads')
@@ -106,7 +113,8 @@ export async function POST(request: NextRequest) {
       .eq('ad_account_id', ad_account_id)
       .in('ad_id', adIds)
       .gte('date', date_start)
-      .lte('date', date_end);
+      .lte('date', date_end)
+      .limit(10000);
 
     const campaignIds = [...new Set(ads.map((a) => a.campaign_id))];
     const { data: campaigns } = await supabase
@@ -239,20 +247,28 @@ export async function POST(request: NextRequest) {
 
     // ── 3b. Fetch GA4 page data (if configured) ─────────────
     try {
-      const ga4PropertyId = await getGA4PropertyId(ad_account_id);
-      if (ga4PropertyId) {
+      const ga4Config = await getGA4Config(ad_account_id);
+      if (ga4Config) {
         const adminDb = createAdminClient();
-        const { data: ga4Rows } = await adminDb
+        let ga4Query = adminDb
           .from('ga4_page_daily')
           .select('*')
           .eq('ad_account_id', ad_account_id)
           .gte('date', date_start)
           .lte('date', date_end);
 
+        // Filter by hostnames to isolate client data
+        if (ga4Config.hostnames.length > 0) {
+          ga4Query = ga4Query.in('hostname', ga4Config.hostnames);
+        }
+
+        const { data: ga4Rows } = await ga4Query;
+
         if (ga4Rows && ga4Rows.length > 0) {
           const mapped: GA4PageRow[] = ga4Rows.map((r) => ({
             date: r.date,
             pagePath: r.page_path,
+            hostname: r.hostname || '',
             sessions: r.sessions,
             engagedSessions: r.engaged_sessions,
             engagementRate: parseFloat(r.engagement_rate),

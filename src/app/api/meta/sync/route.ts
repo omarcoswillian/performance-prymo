@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { runFullSync } from '@/lib/meta/sync';
 import { checkAlerts } from '@/lib/meta/alerts';
-import { format, subDays } from 'date-fns';
+import { resolveDateRange } from '@/lib/date-utils';
 
 /**
  * POST /api/meta/sync
@@ -52,10 +52,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Default: last 7 days + today
-    const dateEnd = body.date_end || format(new Date(), 'yyyy-MM-dd');
-    const dateStart =
-      body.date_start || format(subDays(new Date(), 7), 'yyyy-MM-dd');
+    // Always sync at least 30 days to ensure cumulative consistency (30d >= 14d >= 7d).
+    // Uses Brazil timezone to avoid off-by-one from UTC.
+    const range30 = resolveDateRange('30');
+    const dateStart = range30.dateStart;
+    const dateEnd = range30.dateEnd;
 
     const result = await runFullSync(
       ad_account_id,
