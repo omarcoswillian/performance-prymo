@@ -152,10 +152,17 @@ export default function PaginasPage() {
   const fetchRealtime = useCallback(async () => {
     if (!selectedAccount) return;
     try {
-      const res = await fetch(`/api/ga4/realtime?ad_account_id=${selectedAccount}`);
+      const res = await fetch(`/api/realtime?ad_account_id=${selectedAccount}`);
       if (res.ok) {
         const data = await res.json();
-        setRealtime(data);
+        setRealtime({
+          activeUsers: data.activeUsers ?? 0,
+          activePages: data.activePages ?? 0,
+          topPages: (data.topPages ?? []).map((p: { path: string; activeUsers: number }) => ({
+            pagePath: p.path,
+            activeUsers: p.activeUsers,
+          })),
+        });
       }
     } catch {
       // Silently fail for realtime — not critical

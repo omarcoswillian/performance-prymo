@@ -159,17 +159,29 @@ export default function CommandPage() {
     }
   }, [selectedAccount, dateStart, dateEnd, prevDateStart, prevDateEnd, overrides]);
 
+  const [syncError, setSyncError] = useState<string | null>(null);
+
   const handleSync = useCallback(async () => {
     if (!selectedAccount || syncing) return;
     setSyncing(true);
+    setSyncError(null);
     try {
-      await fetch('/api/meta/sync', {
+      const res = await fetch('/api/meta/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ad_account_id: selectedAccount,
         }),
       });
+      const data = await res.json();
+      if (!res.ok) {
+        const msg = data?.error || 'Erro ao sincronizar';
+        setSyncError(
+          msg.includes('access token') || msg.includes('Session has expired')
+            ? 'Token Meta expirado. Reconecte a conta em Configurações.'
+            : msg
+        );
+      }
       await fetchData();
     } finally {
       setSyncing(false);
@@ -246,6 +258,14 @@ export default function CommandPage() {
             </Button>
           </div>
         </div>
+
+        {/* Sync error banner */}
+        {syncError && (
+          <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2.5 flex items-center gap-2 text-sm text-red-700 dark:text-red-400">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span>{syncError}</span>
+          </div>
+        )}
 
         {/* 4 Metric cards with trend arrows (Cliques movido para tabela) */}
         <div className="grid grid-cols-4 gap-3 mb-4">
@@ -386,11 +406,33 @@ export default function CommandPage() {
             cpa: d.cpa != null ? d.cpa : undefined,
           }));
           const hasCpa = chartData.some(d => d.cpa !== undefined);
+          const lastDataDate = dailyTotals.length > 0
+            ? fmtDate(parseISO(dailyTotals[dailyTotals.length - 1].date), 'dd/MM/yyyy', { locale: ptBR })
+            : null;
+          const firstDataDate = dailyTotals.length > 0
+            ? fmtDate(parseISO(dailyTotals[0].date), 'dd/MM/yyyy', { locale: ptBR })
+            : null;
+          const dataGap = lastDataDate && dateEnd
+            ? (() => {
+                const last = parseISO(dailyTotals[dailyTotals.length - 1].date);
+                const end = parseISO(dateEnd);
+                const diff = Math.floor((end.getTime() - last.getTime()) / 86400000);
+                return diff > 1 ? diff : 0;
+              })()
+            : 0;
 
           return (
             <div className="grid grid-cols-2 gap-3 mb-4">
               <div className="rounded-lg border bg-card p-3">
-                <div className="text-xs font-medium text-muted-foreground mb-2">Vendas por Dia</div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-medium text-muted-foreground">Vendas por Dia</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {firstDataDate} — {lastDataDate}
+                    {dataGap > 0 && (
+                      <span className="ml-1 text-amber-600">({dataGap}d sem dados — sync necessário)</span>
+                    )}
+                  </span>
+                </div>
                 <ResponsiveContainer width="100%" height={120}>
                   <BarChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
