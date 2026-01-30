@@ -37,9 +37,11 @@ export async function POST(request: NextRequest) {
       rows_synced: rowsSynced,
     });
   } catch (error) {
-    console.error('[GA4 Sync] Error:', error instanceof Error ? error.message : error);
+    const msg = error instanceof Error ? error.message : String(error);
+    const stack = error instanceof Error ? error.stack : '';
+    console.error('[GA4 Sync] Error:', msg, stack);
     return NextResponse.json(
-      { error: 'Erro ao sincronizar dados GA4.' },
+      { error: 'Erro ao sincronizar dados GA4.', detail: msg },
       { status: 500 }
     );
   }
