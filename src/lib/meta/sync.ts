@@ -136,14 +136,41 @@ export async function syncMetaStructure(
   }
 
   // Sync ads with creative details (including landing page URL fields)
-  const ads = await metaApiFetchAll<MetaAdResponse>(
-    `${adAccountId}/ads`,
-    decryptedToken,
-    {
-      fields:
-        'id,adset_id,campaign_id,name,status,creative{id,thumbnail_url,image_url,body,title,call_to_action_type,object_type,object_url,link_url,object_story_spec},preview_shareable_link',
+  const FULL_AD_FIELDS =
+    'id,adset_id,campaign_id,name,status,creative{id,thumbnail_url,image_url,body,title,call_to_action_type,object_type,object_url,link_url,object_story_spec},preview_shareable_link';
+  const LIGHT_AD_FIELDS =
+    'id,adset_id,campaign_id,name,status,creative{id,thumbnail_url,image_url,body,title,call_to_action_type,object_type,object_url,link_url},preview_shareable_link';
+
+  let ads: MetaAdResponse[];
+  try {
+    ads = await metaApiFetchAll<MetaAdResponse>(
+      `${adAccountId}/ads`,
+      decryptedToken,
+      { fields: FULL_AD_FIELDS, filtering: JSON.stringify([{ field: 'effective_status', operator: 'IN', value: ['ACTIVE', 'PAUSED', 'CAMPAIGN_PAUSED', 'ADSET_PAUSED'] }]) }
+    );
+  } catch (err) {
+    // Fallback: lighter fields without object_story_spec and no status filter
+    const msg = err instanceof Error ? err.message.toLowerCase() : '';
+    if (msg.includes('reduce the amount') || msg.includes('reduza a quantidade')) {
+      console.warn(`[Sync] Ads request too large for ${adAccountId}, retrying with lighter fields`);
+      try {
+        ads = await metaApiFetchAll<MetaAdResponse>(
+          `${adAccountId}/ads`,
+          decryptedToken,
+          { fields: LIGHT_AD_FIELDS, filtering: JSON.stringify([{ field: 'effective_status', operator: 'IN', value: ['ACTIVE', 'PAUSED', 'CAMPAIGN_PAUSED', 'ADSET_PAUSED'] }]) }
+        );
+      } catch {
+        console.warn(`[Sync] Ads request still too large for ${adAccountId}, fetching minimal fields`);
+        ads = await metaApiFetchAll<MetaAdResponse>(
+          `${adAccountId}/ads`,
+          decryptedToken,
+          { fields: 'id,adset_id,campaign_id,name,status', filtering: JSON.stringify([{ field: 'effective_status', operator: 'IN', value: ['ACTIVE', 'PAUSED'] }]) }
+        );
+      }
+    } else {
+      throw err;
     }
-  );
+  }
 
   if (ads.length > 0) {
     const adRows = ads.map((ad) => ({
@@ -262,6 +289,9 @@ function detectFormat(objectType?: string): string {
  * @param dateEnd - End date (YYYY-MM-DD)
  * @param conversionEvent - The action_type to count as a conversion
  */
+/** Max days per Meta API request to avoid "reduce the amount of data" error */
+const CHUNK_DAYS = 3;
+
 export async function syncMetaInsightsDaily(
   adAccountId: string,
   accessToken: string,
@@ -272,24 +302,96 @@ export async function syncMetaInsightsDaily(
   const supabase = createAdminClient();
   const decryptedToken = decrypt(accessToken);
 
-  // Meta API: insights at AD level with daily breakdown
-  const insights = await metaApiFetchAll<MetaInsightResponse>(
-    `${adAccountId}/insights`,
-    decryptedToken,
-    {
-      level: 'ad',
-      time_increment: '1',
-      time_range: JSON.stringify({
-        since: dateStart,
-        until: dateEnd,
-      }),
-      fields:
-        'ad_id,impressions,clicks,spend,cpm,cpc,ctr,actions,action_values',
+  // Split date range into chunks to avoid Meta API payload limits
+  const chunks = splitDateRange(dateStart, dateEnd, CHUNK_DAYS);
+  let totalSynced = 0;
+
+  for (let ci = 0; ci < chunks.length; ci++) {
+    const { since, until } = chunks[ci];
+    console.log(`[Sync] ${adAccountId} chunk ${ci + 1}/${chunks.length}: ${since} → ${until}`);
+
+    let insights: MetaInsightResponse[];
+    try {
+      insights = await metaApiFetchAll<MetaInsightResponse>(
+        `${adAccountId}/insights`,
+        decryptedToken,
+        {
+          level: 'ad',
+          time_increment: '1',
+          time_range: JSON.stringify({ since, until }),
+          fields:
+            'ad_id,impressions,clicks,spend,cpm,cpc,ctr,actions,action_values',
+        }
+      );
+    } catch (err) {
+      // If a chunk still fails, try day-by-day as last resort
+      const msg = err instanceof Error ? err.message.toLowerCase() : '';
+      const isDataTooLarge = (
+        msg.includes('reduce the amount') ||
+        msg.includes('reduza a quantidade') ||
+        (err instanceof MetaApiException && err.code === 100)
+      );
+      if (isDataTooLarge) {
+        console.warn(`[Sync] Chunk too large, falling back to day-by-day for ${since}→${until}`);
+        const dayChunks = splitDateRange(since, until, 1);
+        for (const day of dayChunks) {
+          try {
+            const dayInsights = await metaApiFetchAll<MetaInsightResponse>(
+              `${adAccountId}/insights`,
+              decryptedToken,
+              {
+                level: 'ad',
+                time_increment: '1',
+                time_range: JSON.stringify({ since: day.since, until: day.until }),
+                fields:
+                  'ad_id,impressions,clicks,spend,cpm,cpc,ctr,actions,action_values',
+              }
+            );
+            totalSynced += await upsertInsights(supabase, adAccountId, dayInsights, conversionEvent);
+          } catch (dayErr) {
+            console.error(`[Sync] Day ${day.since} failed:`, dayErr instanceof Error ? dayErr.message : dayErr);
+          }
+        }
+        continue;
+      }
+      throw err;
     }
-  );
 
-  if (insights.length === 0) return 0;
+    if (insights.length > 0) {
+      totalSynced += await upsertInsights(supabase, adAccountId, insights, conversionEvent);
+    }
+  }
 
+  return totalSynced;
+}
+
+/** Splits a date range into chunks of maxDays */
+function splitDateRange(start: string, end: string, maxDays: number): Array<{ since: string; until: string }> {
+  const chunks: Array<{ since: string; until: string }> = [];
+  const endDate = new Date(end);
+  let cursor = new Date(start);
+
+  while (cursor <= endDate) {
+    const chunkEnd = new Date(cursor);
+    chunkEnd.setDate(chunkEnd.getDate() + maxDays - 1);
+    if (chunkEnd > endDate) chunkEnd.setTime(endDate.getTime());
+
+    const fmt = (d: Date) => d.toISOString().split('T')[0];
+    chunks.push({ since: fmt(cursor), until: fmt(chunkEnd) });
+
+    cursor = new Date(chunkEnd);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return chunks;
+}
+
+/** Converts raw Meta insight rows and upserts them into the database */
+async function upsertInsights(
+  supabase: ReturnType<typeof createAdminClient>,
+  adAccountId: string,
+  insights: MetaInsightResponse[],
+  conversionEvent: string
+): Promise<number> {
   const rows = insights.map((row) => {
     const conversions = extractConversions(row.actions, conversionEvent);
     const conversionValue = extractConversionValue(row.action_values, conversionEvent);
@@ -297,7 +399,7 @@ export async function syncMetaInsightsDaily(
     return {
       ad_account_id: adAccountId,
       ad_id: row.ad_id,
-      date: row.date_start, // With time_increment=1, date_start = date_stop = single day
+      date: row.date_start,
       impressions: parseInt(row.impressions || '0', 10),
       clicks: parseInt(row.clicks || '0', 10),
       spend: parseFloat(row.spend || '0'),
@@ -310,7 +412,6 @@ export async function syncMetaInsightsDaily(
     };
   });
 
-  // Batch upsert
   let totalSynced = 0;
   for (let i = 0; i < rows.length; i += 100) {
     const chunk = rows.slice(i, i + 100);
@@ -321,7 +422,6 @@ export async function syncMetaInsightsDaily(
     if (error) throw new Error(`Failed to upsert insights (batch ${i}): ${error.message}`);
     totalSynced += chunk.length;
   }
-
   return totalSynced;
 }
 

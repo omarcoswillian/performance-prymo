@@ -5,15 +5,7 @@ import { formatCurrency } from '@/lib/format';
 import { Settings, Globe, Check, Loader2, ChevronDown, RefreshCw, Share2 } from 'lucide-react';
 import { useAccount } from '@/components/creatives/account-context';
 import { useState, useEffect, useCallback } from 'react';
-
-declare global {
-  interface Window {
-    FB?: {
-      login: (cb: (response: { authResponse?: { accessToken: string } }) => void, opts: { scope: string }) => void;
-      getLoginStatus: (cb: (response: { status: string; authResponse?: { accessToken: string } }) => void) => void;
-    };
-  }
-}
+import { useSearchParams } from 'next/navigation';
 
 interface MetaAccount {
   id: string;
@@ -130,8 +122,15 @@ export default function ConfiguracoesPage() {
   const [metaLoading, setMetaLoading] = useState(false);
   const [metaReconnecting, setMetaReconnecting] = useState(false);
   const [metaMessage, setMetaMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const searchParams = useSearchParams();
 
   useEffect(() => {
+    // Read OAuth redirect result from query params
+    const success = searchParams.get('meta_success');
+    const error = searchParams.get('meta_error');
+    if (success) setMetaMessage({ type: 'success', text: success });
+    else if (error) setMetaMessage({ type: 'error', text: error });
+
     async function loadMetaAccounts() {
       setMetaLoading(true);
       try {
@@ -147,49 +146,14 @@ export default function ConfiguracoesPage() {
       }
     }
     loadMetaAccounts();
-  }, []);
+  }, [searchParams]);
 
   const handleReconnectMeta = () => {
-    if (!window.FB) {
-      setMetaMessage({ type: 'error', text: 'Facebook SDK nao carregado. Recarregue a pagina.' });
-      return;
-    }
+    // Use server-side OAuth redirect flow instead of FB.login SDK.
+    // FB.login requires HTTPS on the calling page — redirect flow works everywhere.
     setMetaReconnecting(true);
     setMetaMessage(null);
-
-    window.FB.login(async (response) => {
-      if (!response.authResponse?.accessToken) {
-        setMetaReconnecting(false);
-        setMetaMessage({ type: 'error', text: 'Login cancelado ou sem permissao.' });
-        return;
-      }
-      try {
-        const res = await fetch('/api/meta/auth/callback', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            access_token: response.authResponse.accessToken,
-            renew_all: true,
-          }),
-        });
-        const data = await res.json();
-        if (res.ok && data.success) {
-          setMetaMessage({ type: 'success', text: `Token renovado para ${data.renewed} conta(s). Expira em ${new Date(data.token_expires_at).toLocaleDateString('pt-BR')}.` });
-          // Reload accounts to reflect new status
-          const acRes = await fetch('/api/meta/accounts');
-          if (acRes.ok) {
-            const acData = await acRes.json();
-            setMetaAccounts(acData.accounts || []);
-          }
-        } else {
-          setMetaMessage({ type: 'error', text: data.error || 'Erro ao renovar token.' });
-        }
-      } catch {
-        setMetaMessage({ type: 'error', text: 'Erro de rede ao reconectar.' });
-      } finally {
-        setMetaReconnecting(false);
-      }
-    }, { scope: 'ads_management,ads_read,business_management' });
+    window.location.href = '/api/meta/oauth/start';
   };
 
   const isTokenExpired = (expiresAt: string | null) => {
