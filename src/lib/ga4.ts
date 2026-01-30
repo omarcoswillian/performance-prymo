@@ -80,10 +80,16 @@ function getClient(): BetaAnalyticsDataClient {
   if (_client) return _client;
 
   const clientEmail = process.env.GA4_CLIENT_EMAIL;
-  const privateKey = process.env.GA4_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  // Support base64-encoded key (for environments like Vercel where newlines are problematic)
+  let privateKey: string | undefined;
+  if (process.env.GA4_PRIVATE_KEY_BASE64) {
+    privateKey = Buffer.from(process.env.GA4_PRIVATE_KEY_BASE64, 'base64').toString('utf-8');
+  } else {
+    privateKey = process.env.GA4_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  }
 
   if (!clientEmail || !privateKey) {
-    throw new Error('GA4_CLIENT_EMAIL and GA4_PRIVATE_KEY must be set');
+    throw new Error('GA4_CLIENT_EMAIL and GA4_PRIVATE_KEY (or GA4_PRIVATE_KEY_BASE64) must be set');
   }
 
   _client = new BetaAnalyticsDataClient({
@@ -104,10 +110,15 @@ function getAdminClient(): AnalyticsAdminServiceClient {
   if (_adminClient) return _adminClient;
 
   const clientEmail = process.env.GA4_CLIENT_EMAIL;
-  const privateKey = process.env.GA4_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  let privateKey: string | undefined;
+  if (process.env.GA4_PRIVATE_KEY_BASE64) {
+    privateKey = Buffer.from(process.env.GA4_PRIVATE_KEY_BASE64, 'base64').toString('utf-8');
+  } else {
+    privateKey = process.env.GA4_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  }
 
   if (!clientEmail || !privateKey) {
-    throw new Error('GA4_CLIENT_EMAIL and GA4_PRIVATE_KEY must be set');
+    throw new Error('GA4_CLIENT_EMAIL and GA4_PRIVATE_KEY (or GA4_PRIVATE_KEY_BASE64) must be set');
   }
 
   _adminClient = new AnalyticsAdminServiceClient({
