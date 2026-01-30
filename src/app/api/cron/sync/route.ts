@@ -3,7 +3,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { runFullSync } from '@/lib/meta/sync';
 import { checkAlerts } from '@/lib/meta/alerts';
 import { syncGA4ForAccount } from '@/lib/ga4';
-import { format, subDays } from 'date-fns';
+import { resolveDateRange } from '@/lib/date-utils';
 
 /**
  * GET /api/cron/sync
@@ -24,9 +24,7 @@ export async function GET(request: NextRequest) {
   }
 
   const supabase = createAdminClient();
-  const now = new Date();
-  const dateEnd = format(now, 'yyyy-MM-dd');
-  const dateStart = format(subDays(now, 7), 'yyyy-MM-dd');
+  const { dateStart, dateEnd } = resolveDateRange('30');
 
   // Get all active accounts
   const { data: accounts, error } = await supabase
@@ -66,7 +64,7 @@ export async function GET(request: NextRequest) {
 
       // Sync GA4 data (D-1) if configured
       try {
-        const yesterday = format(subDays(now, 1), 'yyyy-MM-dd');
+        const { dateStart: yesterday } = resolveDateRange('yesterday');
         await syncGA4ForAccount(account.ad_account_id, yesterday, yesterday);
       } catch (ga4Err) {
         console.warn(`[Cron] GA4 sync skipped for ${account.ad_account_id}:`, ga4Err);

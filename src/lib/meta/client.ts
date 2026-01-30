@@ -156,6 +156,33 @@ export async function exchangeForLongLivedToken(
 }
 
 /**
+ * Refresh a long-lived token for a new long-lived token.
+ * Meta allows exchanging a still-valid long-lived token before it expires.
+ * Returns a new token with a fresh 60-day expiration.
+ */
+export async function refreshLongLivedToken(
+  currentToken: string
+): Promise<{ access_token: string; expires_in: number }> {
+  const appId = process.env.META_APP_ID;
+  const appSecret = process.env.META_APP_SECRET;
+
+  if (!appId || !appSecret) {
+    throw new Error('META_APP_ID and META_APP_SECRET are required');
+  }
+
+  return metaApiFetch<{ access_token: string; expires_in: number }>(
+    'oauth/access_token',
+    currentToken,
+    {
+      grant_type: 'fb_exchange_token',
+      client_id: appId,
+      client_secret: appSecret,
+      fb_exchange_token: currentToken,
+    }
+  );
+}
+
+/**
  * Get ad accounts accessible by the token.
  */
 export async function getAdAccounts(

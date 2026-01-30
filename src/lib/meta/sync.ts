@@ -6,8 +6,8 @@
  */
 
 import { createAdminClient } from '@/lib/supabase/admin';
-import { decrypt } from '@/lib/crypto';
-import { metaApiFetchAll, metaApiFetch, MetaApiException } from './client';
+import { decrypt, encrypt } from '@/lib/crypto';
+import { metaApiFetchAll, metaApiFetch, MetaApiException, refreshLongLivedToken } from './client';
 
 // ============================================================
 // Types for Meta API responses
@@ -374,6 +374,80 @@ function extractConversionValue(
 }
 
 // ============================================================
+// Token Auto-Refresh
+// ============================================================
+
+/** Minimum days before expiration to trigger auto-refresh */
+const REFRESH_THRESHOLD_DAYS = 7;
+
+/**
+ * Checks if the token is close to expiring and refreshes it automatically.
+ * Returns the (possibly updated) encrypted access token to use for sync.
+ */
+async function maybeRefreshToken(
+  adAccountId: string,
+  encryptedToken: string
+): Promise<string> {
+  const supabase = createAdminClient();
+
+  // Get current token_expires_at
+  const { data: account } = await supabase
+    .from('meta_accounts')
+    .select('token_expires_at')
+    .eq('ad_account_id', adAccountId)
+    .single();
+
+  if (!account?.token_expires_at) return encryptedToken;
+
+  const expiresAt = new Date(account.token_expires_at);
+  const now = new Date();
+  const daysUntilExpiry = (expiresAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+
+  if (daysUntilExpiry > REFRESH_THRESHOLD_DAYS) {
+    return encryptedToken; // Still fresh, no refresh needed
+  }
+
+  if (daysUntilExpiry <= 0) {
+    console.warn(`[Token] Token for ${adAccountId} already expired. Cannot auto-refresh.`);
+    return encryptedToken; // Already expired, can't refresh
+  }
+
+  // Token is expiring soon — refresh it
+  console.log(`[Token] Auto-refreshing token for ${adAccountId} (expires in ${daysUntilExpiry.toFixed(1)} days)`);
+  try {
+    const currentToken = decrypt(encryptedToken);
+    const { access_token: newToken, expires_in } = await refreshLongLivedToken(currentToken);
+    const newEncrypted = encrypt(newToken);
+    const newExpiresAt = new Date(Date.now() + expires_in * 1000).toISOString();
+
+    // Update ALL accounts of this user that share the same token
+    // (Meta tokens are per-user, not per-account)
+    const { data: sameUser } = await supabase
+      .from('meta_accounts')
+      .select('user_id')
+      .eq('ad_account_id', adAccountId)
+      .single();
+
+    if (sameUser) {
+      await supabase
+        .from('meta_accounts')
+        .update({
+          access_token: newEncrypted,
+          token_expires_at: newExpiresAt,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', sameUser.user_id);
+    }
+
+    console.log(`[Token] Refreshed token for ${adAccountId}, new expiry: ${newExpiresAt}`);
+    return newEncrypted;
+  } catch (err) {
+    console.error(`[Token] Failed to refresh token for ${adAccountId}:`, err);
+    return encryptedToken; // Use existing token, will fail at sync if truly expired
+  }
+}
+
+// ============================================================
 // Full Sync Orchestrator
 // ============================================================
 
@@ -388,6 +462,9 @@ export async function runFullSync(
   insights: number;
 }> {
   const supabase = createAdminClient();
+
+  // Auto-refresh token if expiring within 7 days
+  accessToken = await maybeRefreshToken(adAccountId, accessToken);
 
   // Create sync log entry
   const { data: syncLog, error: logError } = await supabase
