@@ -1,21 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { runFullSync } from '@/lib/meta/sync';
-import { checkAlerts } from '@/lib/meta/alerts';
-import { syncGA4ForAccount } from '@/lib/ga4';
-import { resolveDateRange } from '@/lib/date-utils';
 
 /**
  * GET /api/cron/sync
  *
- * Scheduler endpoint: syncs all active accounts.
- * Should be called by an external cron service (Vercel Cron, etc.)
- * Protected by CRON_SECRET header.
- *
- * Syncs the last 7 days + today for each active account.
+ * Lightweight dispatcher: fetches all active accounts and fires off
+ * individual sync requests to /api/cron/sync-account.
+ * Each account runs in its own serverless function invocation,
+ * avoiding the 10s timeout on Vercel Hobby.
  */
 export async function GET(request: NextRequest) {
-  // Verify cron secret
   const authHeader = request.headers.get('authorization');
   const cronSecret = process.env.CRON_SECRET;
 
@@ -24,9 +18,7 @@ export async function GET(request: NextRequest) {
   }
 
   const supabase = createAdminClient();
-  const { dateStart, dateEnd } = resolveDateRange('30');
 
-  // Get all active accounts
   const { data: accounts, error } = await supabase
     .from('meta_accounts')
     .select('ad_account_id, access_token, conversion_event')
@@ -34,62 +26,39 @@ export async function GET(request: NextRequest) {
 
   if (error) {
     console.error('[Cron] Failed to fetch accounts:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch accounts' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to fetch accounts' }, { status: 500 });
   }
 
   if (!accounts || accounts.length === 0) {
-    return NextResponse.json({ message: 'No active accounts', synced: 0 });
+    return NextResponse.json({ message: 'No active accounts', dispatched: 0 });
   }
 
-  const results: Array<{
-    ad_account_id: string;
-    success: boolean;
-    error?: string;
-  }> = [];
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
 
-  for (const account of accounts) {
-    try {
-      await runFullSync(
-        account.ad_account_id,
-        account.access_token,
-        account.conversion_event,
-        dateStart,
-        dateEnd
-      );
-
-      await checkAlerts(account.ad_account_id);
-
-      // Sync GA4 data (D-1) if configured
-      try {
-        const { dateStart: yesterday } = resolveDateRange('yesterday');
-        await syncGA4ForAccount(account.ad_account_id, yesterday, yesterday);
-      } catch (ga4Err) {
-        console.warn(`[Cron] GA4 sync skipped for ${account.ad_account_id}:`, ga4Err);
-      }
-
-      results.push({
+  // Fire-and-forget: dispatch each account sync in parallel
+  const dispatches = accounts.map((account) =>
+    fetch(`${appUrl}/api/cron/sync-account`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${cronSecret}`,
+      },
+      body: JSON.stringify({
         ad_account_id: account.ad_account_id,
-        success: true,
-      });
-    } catch (err) {
-      console.error(
-        `[Cron] Failed to sync ${account.ad_account_id}:`,
-        err
-      );
-      results.push({
-        ad_account_id: account.ad_account_id,
-        success: false,
-        error: err instanceof Error ? err.message : 'Unknown error',
-      });
-    }
-  }
+        access_token: account.access_token,
+        conversion_event: account.conversion_event,
+      }),
+    }).catch((err) => {
+      console.error(`[Cron] Failed to dispatch ${account.ad_account_id}:`, err);
+      return null;
+    })
+  );
+
+  // Wait just for the dispatches to be sent (not for completion)
+  await Promise.all(dispatches);
 
   return NextResponse.json({
-    synced: results.filter((r) => r.success).length,
-    failed: results.filter((r) => !r.success).length,
-    results,
+    dispatched: accounts.length,
+    accounts: accounts.map((a) => a.ad_account_id),
   });
 }
