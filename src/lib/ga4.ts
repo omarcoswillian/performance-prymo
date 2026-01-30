@@ -80,28 +80,12 @@ function getClient(): BetaAnalyticsDataClient {
   if (_client) return _client;
 
   const clientEmail = process.env.GA4_CLIENT_EMAIL;
-  // Support base64-encoded key (for environments like Vercel where newlines are problematic)
   let privateKey: string | undefined;
-  const b64 = process.env.GA4_PRIVATE_KEY_BASE64;
-  const raw = process.env.GA4_PRIVATE_KEY;
-  console.log('[GA4 Client] env check:', {
-    hasB64: !!b64,
-    b64Len: b64?.length,
-    hasRaw: !!raw,
-    rawLen: raw?.length,
-    email: clientEmail,
-  });
-  if (b64) {
-    privateKey = Buffer.from(b64, 'base64').toString('utf-8');
-  } else if (raw) {
-    privateKey = raw.replace(/\\n/g, '\n');
+  if (process.env.GA4_PRIVATE_KEY_BASE64) {
+    privateKey = Buffer.from(process.env.GA4_PRIVATE_KEY_BASE64, 'base64').toString('utf-8');
+  } else {
+    privateKey = process.env.GA4_PRIVATE_KEY?.replace(/\\n/g, '\n');
   }
-  console.log('[GA4 Client] key decoded:', {
-    keyLen: privateKey?.length,
-    startsWith: privateKey?.substring(0, 27),
-    endsWith: privateKey?.substring((privateKey?.length ?? 0) - 26),
-    hasRealNewlines: privateKey?.includes('\n'),
-  });
 
   if (!clientEmail || !privateKey) {
     throw new Error('GA4_CLIENT_EMAIL and GA4_PRIVATE_KEY (or GA4_PRIVATE_KEY_BASE64) must be set');

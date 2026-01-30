@@ -173,10 +173,9 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error('[GA4 Pages] Error:', msg, error instanceof Error ? error.stack : '');
+    console.error('[GA4 Pages] Error:', error instanceof Error ? error.message : error);
     return NextResponse.json(
-      { error: 'Erro interno ao buscar dados GA4.', detail: msg },
+      { error: 'Erro interno ao buscar dados GA4.' },
       { status: 500 }
     );
   }
