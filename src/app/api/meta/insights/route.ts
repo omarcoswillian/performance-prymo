@@ -128,22 +128,12 @@ export async function GET(request: NextRequest) {
           };
         });
 
-        // Repair missing frequency: live-fetch from Meta API if none of the creatives have frequency
+        // Background: repair missing frequency — fire and forget, shows on next reload
         const hasAnyFrequency = creatives.some(c => c.frequency != null && c.frequency > 0);
         if (!hasAnyFrequency && creatives.length > 0) {
-          try {
-            const liveFreqMap = await fetchLiveFrequencyBulk(adAccountId, dateStart, dateEnd);
-            if (liveFreqMap && liveFreqMap.size > 0) {
-              for (const c of creatives) {
-                const freq = liveFreqMap.get(c.ad_id);
-                if (freq != null) {
-                  c.frequency = freq;
-                }
-              }
-            }
-          } catch (err) {
-            console.warn('[Insights] Bulk frequency fetch failed:', err instanceof Error ? err.message : err);
-          }
+          fetchLiveFrequencyBulk(adAccountId, dateStart, dateEnd).catch(err =>
+            console.warn('[Insights] Bulk frequency fetch failed:', err instanceof Error ? err.message : err)
+          );
         }
 
         // Background: repair missing thumbnails by fetching from Meta API
@@ -208,21 +198,13 @@ export async function GET(request: NextRequest) {
           .order('date', { ascending: true })
           .limit(10000);
 
-        // Check if frequency data is missing (all null) — live-fetch from Meta API
-        let enrichedDaily = daily || [];
+        // Background: repair missing frequency — fire and forget, shows on next reload
+        const enrichedDaily = daily || [];
         const hasFrequency = enrichedDaily.some((d: Record<string, unknown>) => d.frequency != null && Number(d.frequency) > 0);
         if (!hasFrequency && enrichedDaily.length > 0) {
-          try {
-            const liveFreq = await fetchLiveFrequency(adAccountId, adId, dateStart, dateEnd);
-            if (liveFreq) {
-              enrichedDaily = enrichedDaily.map((d: Record<string, unknown>) => ({
-                ...d,
-                frequency: liveFreq.get(d.date as string) ?? d.frequency,
-              }));
-            }
-          } catch (err) {
-            console.warn('[Insights] Live frequency fetch failed:', err instanceof Error ? err.message : err);
-          }
+          fetchLiveFrequency(adAccountId, adId, dateStart, dateEnd).catch(err =>
+            console.warn('[Insights] Live frequency fetch failed:', err instanceof Error ? err.message : err)
+          );
         }
 
         // Get campaign/adset names + objective
