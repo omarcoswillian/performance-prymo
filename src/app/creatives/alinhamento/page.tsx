@@ -246,14 +246,18 @@ export default function AlinhamentoPage() {
         {!loading && campaignGroups.length > 0 && (
           <div className="mb-4 space-y-4">
             {campaignGroups.map((group) => {
-              // 1. Melhores nesta pagina: compras desc, CPA asc, top 3
+              const campType = group.creatives[0]?.campaign_type || 'VENDAS';
+              const convLabel = campType === 'CAPTURA' ? 'leads' : 'vendas';
+              const costLabel = campType === 'CAPTURA' ? 'CPL' : 'CPA';
+
+              // 1. Melhores nesta campanha: cost asc, compras desc, top 3
               const best = group.creatives
                 .filter((c) => c.compras > 0)
                 .sort((a, b) => {
-                  if (b.compras !== a.compras) return b.compras - a.compras;
-                  const cpaA = a.cpa ?? Infinity;
-                  const cpaB = b.cpa ?? Infinity;
-                  return cpaA - cpaB;
+                  const costA = a.cpa ?? Infinity;
+                  const costB = b.cpa ?? Infinity;
+                  if (costA !== costB) return costA - costB;
+                  return b.compras - a.compras;
                 })
                 .slice(0, 3);
 
@@ -294,11 +298,11 @@ export default function AlinhamentoPage() {
                     <RankingBlock
                       icon={Trophy}
                       title="Melhores nesta campanha"
-                      emptyText="Sem vendas nesta campanha."
+                      emptyText={`Sem ${convLabel} nesta campanha.`}
                       items={best.map((c) =>
                         toRankingItem(c, [
-                          `${c.compras} vendas`,
-                          formatCurrency(c.cpa),
+                          `${c.compras} ${convLabel}`,
+                          `${costLabel} ${formatCurrency(c.cpa)}`,
                         ])
                       )}
                     />
@@ -310,7 +314,7 @@ export default function AlinhamentoPage() {
                         const rate = ((c.compras / c.clicks) * 100).toFixed(2);
                         return toRankingItem(c, [
                           `${rate}% conv.`,
-                          `${c.compras} vendas`,
+                          `${c.compras} ${convLabel}`,
                         ]);
                       })}
                     />
@@ -361,8 +365,8 @@ export default function AlinhamentoPage() {
                 </th>
                 <th className="text-left px-3 py-2.5 font-medium">Pagina Destino</th>
                 <th className="text-right px-3 py-2.5 font-medium w-20">CTR</th>
-                <th className="text-right px-3 py-2.5 font-medium w-20">Vendas</th>
-                <th className="text-right px-3 py-2.5 font-medium w-24">CPA</th>
+                <th className="text-right px-3 py-2.5 font-medium w-20">Conv.</th>
+                <th className="text-right px-3 py-2.5 font-medium w-24">Custo/Conv.</th>
                 <th className="text-center px-3 py-2.5 font-medium w-32">Alinhamento</th>
               </tr>
             </thead>

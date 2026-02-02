@@ -119,11 +119,18 @@ export async function POST(request: NextRequest) {
     const campaignIds = [...new Set(ads.map((a) => a.campaign_id))];
     const { data: campaigns } = await supabase
       .from('meta_campaigns')
-      .select('campaign_id, name')
+      .select('campaign_id, name, objective')
       .eq('ad_account_id', ad_account_id)
       .in('campaign_id', campaignIds);
 
-    const campaignMap = new Map((campaigns || []).map((c) => [c.campaign_id, c.name]));
+    const campaignMap = new Map((campaigns || []).map((c) => [c.campaign_id, { name: c.name, objective: c.objective }]));
+
+    function mapObjective(objective: string | null): 'VENDAS' | 'CAPTURA' {
+      if (!objective) return 'VENDAS';
+      const upper = objective.toUpperCase();
+      if (upper.includes('LEAD') || upper === 'LEAD_GENERATION' || upper === 'OUTCOME_LEADS') return 'CAPTURA';
+      return 'VENDAS';
+    }
 
     // Aggregate per ad
     const insightsByAd = new Map<string, typeof insights>();
@@ -149,7 +156,8 @@ export async function POST(request: NextRequest) {
           thumbnail_url: ad.thumbnail_url,
           format: ad.format as 'image' | 'video' | 'carousel' | 'unknown',
           campaign_id: ad.campaign_id,
-          campaign_name: campaignMap.get(ad.campaign_id) || ad.campaign_id,
+          campaign_name: campaignMap.get(ad.campaign_id)?.name || ad.campaign_id,
+          campaign_type: mapObjective(campaignMap.get(ad.campaign_id)?.objective ?? null),
           ctr: totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0,
           compras: totalConversions,
           cpa: totalConversions > 0 ? totalSpend / totalConversions : null,
@@ -159,6 +167,7 @@ export async function POST(request: NextRequest) {
           clicks: totalClicks,
           cpc: totalClicks > 0 ? totalSpend / totalClicks : null,
           cpm: totalImpressions > 0 ? (totalSpend / totalImpressions) * 1000 : null,
+          hook_rate: totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : null,
         };
       })
       .filter((c) => c.impressions > 0)

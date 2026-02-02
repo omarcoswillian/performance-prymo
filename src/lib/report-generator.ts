@@ -2,7 +2,9 @@
  * Report Generator — Transforms existing data into actionable text.
  *
  * Rules:
- * - Uses ONLY existing data (CTR, CPA, vendas, conversions, status)
+ * - Uses ONLY existing data (CPA/CPL, vendas/leads, CTR, conversions, status)
+ * - Adapts language based on campaign type (VENDAS vs CAPTURA)
+ * - CTR is treated as visual attraction metric only
  * - Does NOT decide — explains and prioritizes
  * - Does NOT contradict the automatic status
  * - Language: objective, action-focused, no buzzwords
@@ -13,6 +15,18 @@ import {
   type CreativeWithDecision,
 } from '@/lib/decision-engine';
 import { formatCurrency, formatPercent } from '@/lib/format';
+
+/** Get type-aware labels */
+function getLabels(c: CreativeWithDecision) {
+  if (c.campaign_type === 'CAPTURA') {
+    return { convLabel: 'leads', costLabel: 'CPL', costTarget: DEFAULT_SETTINGS.cpl_target };
+  }
+  return { convLabel: 'vendas', costLabel: 'CPA', costTarget: DEFAULT_SETTINGS.cpa_target };
+}
+
+function getCostTarget(c: CreativeWithDecision): number {
+  return c.campaign_type === 'CAPTURA' ? DEFAULT_SETTINGS.cpl_target : DEFAULT_SETTINGS.cpa_target;
+}
 
 // ── Daily Report ──────────────────────────────────────────────
 
@@ -36,10 +50,10 @@ export function generateDailyReport(
     title: 'Escalar hoje',
     items:
       toScale.length > 0
-        ? toScale.map(
-            (c) =>
-              `${c.name} — ${c.compras} vendas, CPA ${formatCurrency(c.cpa)}, CTR ${formatPercent(c.ctr)}`
-          )
+        ? toScale.map((c) => {
+            const { convLabel, costLabel } = getLabels(c);
+            return `${c.name} — ${c.compras} ${convLabel}, ${costLabel} ${formatCurrency(c.cpa)}, CTR ${formatPercent(c.ctr)}`;
+          })
         : ['Nenhum criativo com status ESCALAR no periodo.'],
   });
 
@@ -56,7 +70,7 @@ export function generateDailyReport(
         : ['Nenhum criativo com status MATAR no periodo.'],
   });
 
-  // 3. Wasted spend (high spend, 0 purchases)
+  // 3. Wasted spend (high spend, 0 conversions)
   const wasted = creatives
     .filter((c) => c.compras === 0 && c.spend >= DEFAULT_SETTINGS.min_spend)
     .sort((a, b) => b.spend - a.spend)
@@ -65,14 +79,14 @@ export function generateDailyReport(
   if (wasted.length > 0) {
     sections.push({
       title: 'Gasto sem retorno',
-      items: wasted.map(
-        (c) =>
-          `${c.name} — R$${c.spend.toFixed(2)} gasto, 0 vendas, CTR ${formatPercent(c.ctr)}`
-      ),
+      items: wasted.map((c) => {
+        const { convLabel } = getLabels(c);
+        return `${c.name} — R$${c.spend.toFixed(2)} gasto, 0 ${convLabel}, CTR ${formatPercent(c.ctr)}`;
+      }),
     });
   }
 
-  // 4. Opportunities (good CTR but 0 purchases — adjust promise/page)
+  // 4. Opportunities (good CTR but 0 conversions — page/offer issue)
   const opportunities = creatives
     .filter(
       (c) =>
@@ -88,7 +102,7 @@ export function generateDailyReport(
       title: 'Oportunidades detectadas',
       items: opportunities.map(
         (c) =>
-          `${c.name} — CTR ${formatPercent(c.ctr)} (acima do benchmark), mas 0 vendas. Investigar pagina de destino ou oferta.`
+          `${c.name} — CTR ${formatPercent(c.ctr)} (boa atracao visual), mas 0 conversoes. Investigar pagina de destino ou oferta.`
       ),
     });
   }
@@ -103,10 +117,10 @@ export function generateDailyReport(
   if (convGems.length > 0) {
     sections.push({
       title: 'Maiores taxas de conversao',
-      items: convGems.map(
-        (c) =>
-          `${c.name} — ${c.convRate.toFixed(2)}% conversao (${c.compras} vendas de ${c.clicks} cliques)`
-      ),
+      items: convGems.map((c) => {
+        const { convLabel } = getLabels(c);
+        return `${c.name} — ${c.convRate.toFixed(2)}% conversao (${c.compras} ${convLabel} de ${c.clicks} cliques)`;
+      }),
     });
   }
 
@@ -127,33 +141,35 @@ export function generateCreativeReport(
   ctrBenchmark: number
 ): CreativeReport {
   const reasons: string[] = [];
+  const { convLabel, costLabel, costTarget } = getLabels(creative);
 
-  // Performance analysis
-  if (creative.ctr >= ctrBenchmark) {
-    reasons.push(
-      `CTR (${formatPercent(creative.ctr)}) acima do benchmark da conta (${formatPercent(ctrBenchmark)})`
-    );
-  } else {
-    reasons.push(
-      `CTR (${formatPercent(creative.ctr)}) abaixo do benchmark da conta (${formatPercent(ctrBenchmark)})`
-    );
-  }
-
+  // Primary metric analysis (CPA/CPL)
   if (creative.compras > 0 && creative.cpa !== null) {
-    if (creative.cpa <= DEFAULT_SETTINGS.cpa_target) {
+    if (creative.cpa <= costTarget) {
       reasons.push(
-        `CPA (${formatCurrency(creative.cpa)}) dentro do alvo (${formatCurrency(DEFAULT_SETTINGS.cpa_target)})`
+        `${costLabel} (${formatCurrency(creative.cpa)}) dentro do alvo (${formatCurrency(costTarget)})`
       );
     } else {
       reasons.push(
-        `CPA (${formatCurrency(creative.cpa)}) acima do alvo (${formatCurrency(DEFAULT_SETTINGS.cpa_target)})`
+        `${costLabel} (${formatCurrency(creative.cpa)}) acima do alvo (${formatCurrency(costTarget)})`
       );
     }
   }
 
   if (creative.compras === 0 && creative.spend >= DEFAULT_SETTINGS.min_spend) {
     reasons.push(
-      `Gastou R$${creative.spend.toFixed(2)} sem nenhuma venda`
+      `Gastou R$${creative.spend.toFixed(2)} sem nenhuma conversao`
+    );
+  }
+
+  // Visual attraction analysis (CTR as secondary)
+  if (creative.ctr >= ctrBenchmark) {
+    reasons.push(
+      `CTR (${formatPercent(creative.ctr)}) acima do benchmark da conta (${formatPercent(ctrBenchmark)}) - boa atracao visual`
+    );
+  } else {
+    reasons.push(
+      `CTR (${formatPercent(creative.ctr)}) abaixo do benchmark da conta (${formatPercent(ctrBenchmark)}) - atracao visual fraca`
     );
   }
 
@@ -167,15 +183,13 @@ export function generateCreativeReport(
     );
   }
 
-  // Summary
-  const isPositive =
-    creative.status === 'ESCALAR' ||
-    (creative.compras > 0 && creative.ctr >= ctrBenchmark);
-  const summary = isPositive
-    ? `Este criativo esta performando bem com ${creative.compras} vendas e CTR de ${formatPercent(creative.ctr)}.`
+  // Summary based on primary metric
+  const hasPrimaryGood = creative.compras > 0 && (creative.cpa === null || creative.cpa <= costTarget);
+  const summary = hasPrimaryGood
+    ? `Este criativo esta performando bem com ${creative.compras} ${convLabel} e ${costLabel} de ${formatCurrency(creative.cpa)}.`
     : creative.compras === 0
-      ? `Este criativo nao gerou vendas com R$${creative.spend.toFixed(2)} investidos.`
-      : `Este criativo tem metricas abaixo do esperado.`;
+      ? `Este criativo nao gerou ${convLabel} com R$${creative.spend.toFixed(2)} investidos.`
+      : `Este criativo tem ${costLabel} acima do esperado.`;
 
   // Decision explanation
   const decision = `Status automatico: ${creative.status}. Motivo: ${creative.status_reason}`;
@@ -191,9 +205,12 @@ export function generateCreativeReport(
       action = 'Pausar este criativo no Meta Ads Manager imediatamente.';
       break;
     case 'VARIAR':
-      if (creative.compras === 0 && creative.ctr >= ctrBenchmark) {
+      if (creative.compras > 0 && creative.cpa !== null && creative.cpa <= costTarget && creative.ctr < ctrBenchmark) {
         action =
-          'CTR bom mas sem conversao — revisar pagina de destino ou ajustar a oferta.';
+          `${costLabel} bom mas CTR baixo — variar o visual (imagem/video/hook) mantendo a mesma oferta.`;
+      } else if (creative.compras === 0 && creative.ctr >= ctrBenchmark) {
+        action =
+          'CTR bom mas sem conversao — problema provavelmente na pagina de destino ou oferta. Revisar landing page.';
       } else if (creative.frequency >= DEFAULT_SETTINGS.frequency_warn) {
         action =
           'Criar variacao deste criativo com novo hook ou angulo para combater fadiga.';
@@ -227,12 +244,15 @@ export function generateFullReport(
   const variar = creatives.filter((c) => c.status === 'VARIAR');
   const forcado = creatives.filter((c) => c.status === 'FORÇADO');
 
+  const vendasCreatives = creatives.filter((c) => c.campaign_type === 'VENDAS');
+  const capturaCreatives = creatives.filter((c) => c.campaign_type === 'CAPTURA');
+
   const totalSpend = creatives.reduce((s, c) => s + c.spend, 0);
   const totalCompras = creatives.reduce((s, c) => s + c.compras, 0);
   const totalClicks = creatives.reduce((s, c) => s + c.clicks, 0);
   const totalImpressions = creatives.reduce((s, c) => s + c.impressions, 0);
   const avgCtr = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0;
-  const avgCpa = totalCompras > 0 ? totalSpend / totalCompras : null;
+  const avgCost = totalCompras > 0 ? totalSpend / totalCompras : null;
   const wastedSpend = creatives
     .filter((c) => c.compras === 0 && c.spend >= settings.min_spend)
     .reduce((s, c) => s + c.spend, 0);
@@ -240,16 +260,27 @@ export function generateFullReport(
   // ── 1. RESUMO GERAL ──
   const resumo: string[] = [
     `${creatives.length} criativos analisados no periodo.`,
-    `Investimento total: ${formatCurrency(totalSpend)}. Vendas: ${totalCompras}. CTR medio: ${formatPercent(avgCtr)}.`,
-    avgCpa !== null
-      ? `CPA medio da conta: ${formatCurrency(avgCpa)} (alvo: ${formatCurrency(settings.cpa_target)}).`
-      : `Sem vendas suficientes para calcular CPA medio.`,
-    `Status: ${escalar.length} ESCALAR, ${variar.length} VARIAR, ${matar.length} MATAR${forcado.length > 0 ? `, ${forcado.length} FORÇADO` : ''}.`,
   ];
+
+  if (vendasCreatives.length > 0 && capturaCreatives.length > 0) {
+    resumo.push(`${vendasCreatives.length} de vendas, ${capturaCreatives.length} de captura.`);
+  }
+
+  resumo.push(`Investimento total: ${formatCurrency(totalSpend)}. Conversoes: ${totalCompras}. CTR medio: ${formatPercent(avgCtr)}.`);
+
+  if (avgCost !== null) {
+    resumo.push(`Custo medio por conversao: ${formatCurrency(avgCost)}.`);
+  } else {
+    resumo.push('Sem conversoes suficientes para calcular custo medio.');
+  }
+
+  resumo.push(
+    `Status: ${escalar.length} ESCALAR, ${variar.length} VARIAR, ${matar.length} MATAR${forcado.length > 0 ? `, ${forcado.length} FORÇADO` : ''}.`
+  );
 
   if (wastedSpend > 0) {
     resumo.push(
-      `Gasto sem retorno: ${formatCurrency(wastedSpend)} em criativos com 0 vendas.`
+      `Gasto sem retorno: ${formatCurrency(wastedSpend)} em criativos com 0 conversoes.`
     );
   }
 
@@ -258,7 +289,6 @@ export function generateFullReport(
   // ── 2. O QUE ESTA BOM ──
   const bom: string[] = [];
 
-  // Top performing creatives
   const topPerformers = escalar
     .sort((a, b) => b.compras - a.compras)
     .slice(0, 5);
@@ -268,8 +298,9 @@ export function generateFullReport(
       `${topPerformers.length} criativo(s) em status ESCALAR — melhores resultados:`
     );
     for (const c of topPerformers) {
+      const { convLabel, costLabel } = getLabels(c);
       bom.push(
-        `  - ${c.name}: ${c.compras} vendas, CPA ${formatCurrency(c.cpa)}, CTR ${formatPercent(c.ctr)}`
+        `  - ${c.name}: ${c.compras} ${convLabel}, ${costLabel} ${formatCurrency(c.cpa)}, CTR ${formatPercent(c.ctr)}`
       );
     }
   }
@@ -309,8 +340,9 @@ export function generateFullReport(
   if (healthyCampaigns.length > 0) {
     bom.push('Campanhas com boa performance:');
     for (const [name, items] of healthyCampaigns) {
-      const totalVendas = items.reduce((s, c) => s + c.compras, 0);
-      bom.push(`  - ${name}: ${totalVendas} vendas, ${items.filter((c) => c.status === 'ESCALAR').length} criativos escalando`);
+      const totalConv = items.reduce((s, c) => s + c.compras, 0);
+      const typeLabel = items[0]?.campaign_type === 'CAPTURA' ? 'leads' : 'vendas';
+      bom.push(`  - ${name}: ${totalConv} ${typeLabel}, ${items.filter((c) => c.status === 'ESCALAR').length} criativos escalando`);
     }
   }
 
@@ -323,7 +355,6 @@ export function generateFullReport(
   // ── 3. O QUE PRECISA MELHORAR ──
   const melhorar: string[] = [];
 
-  // Creatives to kill
   if (matar.length > 0) {
     const worstBySpend = matar
       .sort((a, b) => b.spend - a.spend)
@@ -338,29 +369,7 @@ export function generateFullReport(
     }
   }
 
-  // Low CTR
-  const lowCtr = creatives
-    .filter(
-      (c) =>
-        c.ctr < ctrBenchmark &&
-        c.spend >= settings.min_spend &&
-        c.impressions >= 100
-    )
-    .sort((a, b) => a.ctr - b.ctr)
-    .slice(0, 5);
-
-  if (lowCtr.length > 0) {
-    melhorar.push(
-      `Criativos com CTR abaixo do benchmark (${formatPercent(ctrBenchmark)}):`
-    );
-    for (const c of lowCtr) {
-      melhorar.push(
-        `  - ${c.name}: CTR ${formatPercent(c.ctr)}, ${c.clicks} cliques`
-      );
-    }
-  }
-
-  // High CTR but 0 purchases (page/offer issue)
+  // High CTR but 0 conversions (page/offer issue)
   const hookNoPurchase = creatives
     .filter(
       (c) =>
@@ -372,7 +381,7 @@ export function generateFullReport(
     .slice(0, 5);
 
   if (hookNoPurchase.length > 0) {
-    melhorar.push('Criativos com bom CTR mas 0 vendas (possivel problema de pagina/oferta):');
+    melhorar.push('Criativos com boa atracao visual mas 0 conversoes (possivel problema de pagina/oferta):');
     for (const c of hookNoPurchase) {
       melhorar.push(
         `  - ${c.name}: CTR ${formatPercent(c.ctr)}, ${formatCurrency(c.spend)} gasto`
@@ -380,21 +389,21 @@ export function generateFullReport(
     }
   }
 
-  // High CPA
-  const highCpa = creatives
-    .filter(
-      (c) => c.cpa !== null && c.cpa > settings.cpa_target && c.compras > 0
-    )
+  // High cost per conversion
+  const highCost = creatives
+    .filter((c) => {
+      const target = getCostTarget(c);
+      return c.cpa !== null && c.cpa > target && c.compras > 0;
+    })
     .sort((a, b) => (b.cpa ?? 0) - (a.cpa ?? 0))
     .slice(0, 5);
 
-  if (highCpa.length > 0) {
-    melhorar.push(
-      `Criativos com CPA acima do alvo (${formatCurrency(settings.cpa_target)}):`
-    );
-    for (const c of highCpa) {
+  if (highCost.length > 0) {
+    melhorar.push('Criativos com custo por conversao acima do alvo:');
+    for (const c of highCost) {
+      const { convLabel, costLabel } = getLabels(c);
       melhorar.push(
-        `  - ${c.name}: CPA ${formatCurrency(c.cpa)}, ${c.compras} vendas`
+        `  - ${c.name}: ${costLabel} ${formatCurrency(c.cpa)}, ${c.compras} ${convLabel}`
       );
     }
   }
@@ -408,21 +417,29 @@ export function generateFullReport(
   // ── 4. SUGESTOES PRATICAS ──
   const sugestoes: string[] = [];
 
-  // Scale recommendations
   if (escalar.length > 0) {
     sugestoes.push(
-      `ESCALAR: Aumentar investimento nos ${escalar.length} criativo(s) com status ESCALAR. Priorizar os com menor CPA e maior volume de vendas.`
+      `ESCALAR: Aumentar investimento nos ${escalar.length} criativo(s) com status ESCALAR. Priorizar os com menor custo por conversao e maior volume.`
     );
   }
 
-  // Kill recommendations
   if (matar.length > 0) {
     sugestoes.push(
       `MATAR: Pausar ${matar.length} criativo(s) com status MATAR no Meta Ads Manager. Gasto acumulado sem retorno: ${formatCurrency(matar.reduce((s, c) => s + (c.compras === 0 ? c.spend : 0), 0))}.`
     );
   }
 
-  // Variation recommendations
+  // Visual variation recommendations
+  const needsVisualChange = variar.filter(
+    (c) => c.compras > 0 && c.cpa !== null && c.cpa <= getCostTarget(c) && c.ctr < ctrBenchmark
+  );
+  if (needsVisualChange.length > 0) {
+    sugestoes.push(
+      `VARIAR VISUAL: ${needsVisualChange.length} criativo(s) convertem bem mas tem CTR baixo. Criar variacoes visuais (novo hook/imagem) mantendo a mesma oferta.`
+    );
+  }
+
+  // Fatigue recommendations
   const fatigued = variar.filter(
     (c) => c.frequency >= settings.frequency_warn
   );
@@ -439,15 +456,20 @@ export function generateFullReport(
     );
   }
 
-  // General observation
   if (totalCompras === 0) {
     sugestoes.push(
-      'ATENCAO: Nenhuma compra registrada no periodo. Verificar configuracao de pixel, pagina de destino e oferta.'
+      'ATENCAO: Nenhuma conversao registrada no periodo. Verificar configuracao de pixel, pagina de destino e oferta.'
     );
-  } else if (avgCpa !== null && avgCpa > settings.cpa_target * 1.5) {
-    sugestoes.push(
-      `ATENCAO: CPA medio da conta (${formatCurrency(avgCpa)}) esta 50%+ acima do alvo. Considerar revisar segmentacao e criativos em massa.`
-    );
+  } else if (avgCost !== null) {
+    // Check if avg cost is too high based on predominant type
+    const predominantTarget = capturaCreatives.length > vendasCreatives.length
+      ? settings.cpl_target
+      : settings.cpa_target;
+    if (avgCost > predominantTarget * 1.5) {
+      sugestoes.push(
+        `ATENCAO: Custo medio por conversao (${formatCurrency(avgCost)}) esta 50%+ acima do alvo. Considerar revisar segmentacao e criativos em massa.`
+      );
+    }
   }
 
   if (sugestoes.length === 0) {
@@ -485,40 +507,48 @@ export function generateAlignmentReport(
   for (const [campaignName, items] of groups) {
     const totalSpend = items.reduce((s, c) => s + c.spend, 0);
     const totalCompras = items.reduce((s, c) => s + c.compras, 0);
-    const withPurchases = items.filter((c) => c.compras > 0);
-    const withoutPurchases = items.filter(
+    const withConversions = items.filter((c) => c.compras > 0);
+    const withoutConversions = items.filter(
       (c) => c.compras === 0 && c.spend >= DEFAULT_SETTINGS.min_spend
     );
 
+    const campType = items[0]?.campaign_type || 'VENDAS';
+    const convLabel = campType === 'CAPTURA' ? 'leads' : 'vendas';
+    const costLabel = campType === 'CAPTURA' ? 'CPL' : 'CPA';
+
     const details: string[] = [];
 
-    if (withPurchases.length > 0) {
-      const best = withPurchases.sort((a, b) => b.compras - a.compras)[0];
+    if (withConversions.length > 0) {
+      const best = withConversions.sort((a, b) => {
+        const costA = a.cpa ?? Infinity;
+        const costB = b.cpa ?? Infinity;
+        if (costA !== costB) return costA - costB;
+        return b.compras - a.compras;
+      })[0];
       details.push(
-        `Melhor criativo: ${best.name} (${best.compras} vendas, CPA ${formatCurrency(best.cpa)})`
+        `Melhor criativo: ${best.name} (${best.compras} ${convLabel}, ${costLabel} ${formatCurrency(best.cpa)})`
       );
     }
 
-    if (withoutPurchases.length > 0) {
-      const worst = withoutPurchases.sort((a, b) => b.spend - a.spend)[0];
+    if (withoutConversions.length > 0) {
+      const worst = withoutConversions.sort((a, b) => b.spend - a.spend)[0];
       details.push(
-        `Maior gasto sem retorno: ${worst.name} (R$${worst.spend.toFixed(2)} gasto, 0 vendas)`
+        `Maior gasto sem retorno: ${worst.name} (R$${worst.spend.toFixed(2)} gasto, 0 ${convLabel})`
       );
     }
 
     const killCount = items.filter((c) => c.status === 'MATAR').length;
     const scaleCount = items.filter((c) => c.status === 'ESCALAR').length;
 
-    // Insight
     let insight: string;
     if (totalCompras === 0) {
       insight = `Campanha sem conversoes. R$${totalSpend.toFixed(2)} investidos em ${items.length} criativos sem resultado.`;
     } else if (killCount > scaleCount && killCount > 0) {
       insight = `Maioria dos criativos com performance ruim (${killCount} para matar vs ${scaleCount} para escalar).`;
     } else if (scaleCount > 0 && killCount === 0) {
-      insight = `Campanha saudavel. ${scaleCount} criativos escalando, ${totalCompras} vendas totais.`;
+      insight = `Campanha saudavel. ${scaleCount} criativos escalando, ${totalCompras} ${convLabel} totais.`;
     } else {
-      insight = `Performance mista. ${scaleCount} escalando, ${killCount} para matar. ${totalCompras} vendas com R$${totalSpend.toFixed(2)} investidos.`;
+      insight = `Performance mista. ${scaleCount} escalando, ${killCount} para matar. ${totalCompras} ${convLabel} com R$${totalSpend.toFixed(2)} investidos.`;
     }
 
     if (details.length > 0 || insight) {
@@ -527,7 +557,6 @@ export function generateAlignmentReport(
   }
 
   return reports.sort((a, b) => {
-    // Sort by campaigns with more issues first
     const aHasIssue = a.insight.includes('sem conversoes') || a.insight.includes('performance ruim');
     const bHasIssue = b.insight.includes('sem conversoes') || b.insight.includes('performance ruim');
     if (aHasIssue !== bHasIssue) return aHasIssue ? -1 : 1;

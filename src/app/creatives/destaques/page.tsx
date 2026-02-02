@@ -131,6 +131,14 @@ function InsightBlock({
   );
 }
 
+/** Labels adapted per campaign type */
+function getLabels(c: CreativeWithDecision) {
+  if (c.campaign_type === 'CAPTURA') {
+    return { convLabel: 'leads', costLabel: 'CPL', costTarget: DEFAULT_SETTINGS.cpl_target };
+  }
+  return { convLabel: 'vendas', costLabel: 'CPA', costTarget: DEFAULT_SETTINGS.cpa_target };
+}
+
 // --------------- Page ---------------
 
 export default function DestaquesPage() {
@@ -172,39 +180,39 @@ export default function DestaquesPage() {
   }, [fetchData]);
 
   // ---- Bloco 1: Melhores Criativos ----
+  // Ranked by cost metric (CPA/CPL asc), then conversions desc — CTR NOT in ranking
   const melhores = creatives
     .filter((c) => c.status !== 'MATAR' && c.compras > 0)
     .sort((a, b) => {
-      if (b.compras !== a.compras) return b.compras - a.compras;
-      const cpaA = a.cpa ?? Infinity;
-      const cpaB = b.cpa ?? Infinity;
-      if (cpaA !== cpaB) return cpaA - cpaB;
-      return b.ctr - a.ctr;
+      const costA = a.cpa ?? Infinity;
+      const costB = b.cpa ?? Infinity;
+      if (costA !== costB) return costA - costB;
+      return b.compras - a.compras;
     })
     .slice(0, 5);
 
   // ---- Bloco 2: Piores Criativos ----
-  const cpaTarget = DEFAULT_SETTINGS.cpa_target;
   const minSpend = DEFAULT_SETTINGS.min_spend;
 
   const piores = creatives
-    .filter(
-      (c) =>
-        c.status === 'MATAR' ||
-        (c.spend >= minSpend && c.compras === 0) ||
-        (c.cpa !== null && c.cpa > cpaTarget * 1.3)
-    )
+    .filter((c) => {
+      if (c.status === 'MATAR') return true;
+      if (c.spend >= minSpend && c.compras === 0) return true;
+      const { costTarget } = getLabels(c);
+      if (c.cpa !== null && c.cpa > costTarget * DEFAULT_SETTINGS.cost_kill_multiplier) return true;
+      return false;
+    })
     .sort((a, b) => {
-      // Gasto desperdicado (spend com 0 compras) desc
+      // Wasted spend desc
       const wasteA = a.compras === 0 ? a.spend : 0;
       const wasteB = b.compras === 0 ? b.spend : 0;
       if (wasteB !== wasteA) return wasteB - wasteA;
-      // Ratio CPA/alvo desc
-      const ratioA = a.cpa !== null ? a.cpa / cpaTarget : 0;
-      const ratioB = b.cpa !== null ? b.cpa / cpaTarget : 0;
-      if (ratioB !== ratioA) return ratioB - ratioA;
-      // CTR asc
-      return a.ctr - b.ctr;
+      // Cost ratio desc
+      const { costTarget: targetA } = getLabels(a);
+      const { costTarget: targetB } = getLabels(b);
+      const ratioA = a.cpa !== null ? a.cpa / targetA : 0;
+      const ratioB = b.cpa !== null ? b.cpa / targetB : 0;
+      return ratioB - ratioA;
     })
     .slice(0, 5);
 
@@ -226,12 +234,14 @@ export default function DestaquesPage() {
     .slice(0, 5);
 
   // ---- Bloco 4: Hook Forte, Conversao Fraca ----
+  // CTR used here correctly — as visual attraction indicator
   const hookForte = creatives
     .filter((c) => {
       if (c.ctr < ctrBenchmark) return false;
+      const { costTarget } = getLabels(c);
       const noConv = c.compras === 0 && c.spend >= minSpend;
-      const cpaBad = c.cpa !== null && c.cpa > cpaTarget;
-      return noConv || cpaBad;
+      const costBad = c.cpa !== null && c.cpa > costTarget;
+      return noConv || costBad;
     })
     .sort((a, b) => b.ctr - a.ctr)
     .slice(0, 5);
@@ -266,38 +276,40 @@ export default function DestaquesPage() {
           <InsightBlock
             icon={Trophy}
             title="Melhores Criativos"
-            subtitle="Mais vendas com menor CPA"
+            subtitle="Menor custo por conversao com volume"
             ctaLabel="Ver no Painel de Comando"
             ctaHref="/creatives"
             loading={loading}
-            emptyText="Nenhum criativo com vendas no periodo."
-            items={melhores.map((c) =>
-              toItem(c, [
-                `${c.compras} vendas`,
-                formatCurrency(c.cpa),
+            emptyText="Nenhum criativo com conversoes no periodo."
+            items={melhores.map((c) => {
+              const { convLabel, costLabel } = getLabels(c);
+              return toItem(c, [
+                `${c.compras} ${convLabel}`,
+                `${costLabel} ${formatCurrency(c.cpa)}`,
                 `CTR ${formatPercent(c.ctr)}`,
-              ])
-            )}
+              ]);
+            })}
           />
 
           {/* Bloco 2 */}
           <InsightBlock
             icon={Skull}
             title="Piores Criativos"
-            subtitle="Maior gasto desperdicado ou CPA acima do alvo"
+            subtitle="Maior gasto desperdicado ou custo acima do alvo"
             ctaLabel="Ver Diagnostico"
             ctaHref="/creatives/diagnostico"
             loading={loading}
             emptyText="Nenhum criativo com performance critica."
-            items={piores.map((c) =>
-              toItem(c, [
+            items={piores.map((c) => {
+              const { convLabel, costLabel } = getLabels(c);
+              return toItem(c, [
                 `R$${c.spend.toFixed(2)} gasto`,
                 c.compras === 0
-                  ? '0 vendas'
-                  : `CPA ${formatCurrency(c.cpa)}`,
+                  ? `0 ${convLabel}`
+                  : `${costLabel} ${formatCurrency(c.cpa)}`,
                 `CTR ${formatPercent(c.ctr)}`,
-              ])
-            )}
+              ]);
+            })}
           />
 
           {/* Bloco 3 */}
@@ -310,11 +322,12 @@ export default function DestaquesPage() {
             loading={loading}
             emptyText="Nenhum criativo nesta categoria."
             items={muitosCliques.map((c) => {
+              const { convLabel } = getLabels(c);
               const convRate =
                 c.clicks > 0 ? ((c.compras / c.clicks) * 100).toFixed(2) : '0';
               return toItem(c, [
                 `${c.clicks} cliques`,
-                `${c.compras} vendas`,
+                `${c.compras} ${convLabel}`,
                 `Conv. ${convRate}%`,
               ]);
             })}
@@ -324,36 +337,38 @@ export default function DestaquesPage() {
           <InsightBlock
             icon={Zap}
             title="Hook Forte, Conversao Fraca"
-            subtitle="CTR acima do benchmark mas nao convertem"
+            subtitle="CTR acima do benchmark mas nao convertem — problema de oferta/pagina"
             ctaLabel="Ver Diagnostico"
             ctaHref="/creatives/diagnostico"
             loading={loading}
             emptyText="Nenhum criativo nesta categoria."
-            items={hookForte.map((c) =>
-              toItem(c, [
+            items={hookForte.map((c) => {
+              const { convLabel, costLabel } = getLabels(c);
+              return toItem(c, [
                 `CTR ${formatPercent(c.ctr)}`,
                 c.compras === 0
-                  ? '0 vendas'
-                  : `CPA ${formatCurrency(c.cpa)}`,
+                  ? `0 ${convLabel}`
+                  : `${costLabel} ${formatCurrency(c.cpa)}`,
                 `R$${c.spend.toFixed(2)} gasto`,
-              ])
-            )}
+              ]);
+            })}
           />
 
           {/* Bloco 5 */}
           <InsightBlock
             icon={TrendingUp}
             title="Destaques de Conversao"
-            subtitle="Maior taxa de conversao (compras/cliques)"
+            subtitle="Maior taxa de conversao (conversoes/cliques)"
             ctaLabel="Ver Alinhamento"
             ctaHref="/creatives/alinhamento"
             loading={loading}
             emptyText="Nenhum criativo com conversoes e cliques suficientes."
             items={destaquesConv.map((c) => {
+              const { convLabel } = getLabels(c);
               const rate = ((c.compras / c.clicks) * 100).toFixed(2);
               return toItem(c, [
                 `${rate}% conv.`,
-                `${c.compras} vendas`,
+                `${c.compras} ${convLabel}`,
                 `${c.clicks} cliques`,
               ]);
             })}

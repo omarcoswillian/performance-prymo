@@ -64,6 +64,8 @@ interface MetaInsightResponse {
   cpm?: string;
   cpc?: string;
   ctr?: string;
+  frequency?: string;
+  reach?: string;
   actions?: Array<{
     action_type: string;
     value: string;
@@ -199,6 +201,33 @@ export async function syncMetaStructure(
 
       if (adError) throw new Error(`Failed to upsert ads (batch ${i}): ${adError.message}`);
     }
+
+    // Second pass: fetch thumbnails for ads that ended up without one
+    const missingThumbnails = adRows.filter((r) => !r.thumbnail_url && r.creative_id);
+  if (missingThumbnails.length > 0) {
+    console.log(`[Sync] ${missingThumbnails.length} ads missing thumbnails, fetching from creative endpoint...`);
+    for (const row of missingThumbnails) {
+      try {
+        const creativeData = await metaApiFetch<{ thumbnail_url?: string; image_url?: string }>(
+          `${row.creative_id}`,
+          decryptedToken,
+          { fields: 'thumbnail_url,image_url' }
+        );
+        const url = creativeData.thumbnail_url || creativeData.image_url || null;
+        if (url) {
+          row.thumbnail_url = url;
+          await supabase
+            .from('meta_ads')
+            .update({ thumbnail_url: url, updated_at: new Date().toISOString() })
+            .eq('ad_account_id', adAccountId)
+            .eq('ad_id', row.ad_id);
+          console.log(`[Sync] Fetched thumbnail for ad ${row.ad_id} via creative ${row.creative_id}`);
+        }
+      } catch (err) {
+        console.warn(`[Sync] Failed to fetch thumbnail for creative ${row.creative_id}:`, err instanceof Error ? err.message : err);
+      }
+    }
+  }
   }
 
   // Sync creative → page mapping (extract landing page URLs from ad creatives)
@@ -320,7 +349,7 @@ export async function syncMetaInsightsDaily(
           time_increment: '1',
           time_range: JSON.stringify({ since, until }),
           fields:
-            'ad_id,impressions,clicks,spend,cpm,cpc,ctr,actions,action_values',
+            'ad_id,impressions,clicks,spend,cpm,cpc,ctr,frequency,reach,actions,action_values',
         }
       );
     } catch (err) {
@@ -344,7 +373,7 @@ export async function syncMetaInsightsDaily(
                 time_increment: '1',
                 time_range: JSON.stringify({ since: day.since, until: day.until }),
                 fields:
-                  'ad_id,impressions,clicks,spend,cpm,cpc,ctr,actions,action_values',
+                  'ad_id,impressions,clicks,spend,cpm,cpc,ctr,frequency,reach,actions,action_values',
               }
             );
             totalSynced += await upsertInsights(supabase, adAccountId, dayInsights, conversionEvent);
@@ -396,6 +425,16 @@ async function upsertInsights(
     const conversions = extractConversions(row.actions, conversionEvent);
     const conversionValue = extractConversionValue(row.action_values, conversionEvent);
 
+    // Frequency: use Meta's frequency field directly, or calculate from impressions/reach
+    let frequency: number | null = null;
+    if (row.frequency) {
+      frequency = parseFloat(row.frequency);
+    } else if (row.reach && row.impressions) {
+      const reach = parseInt(row.reach, 10);
+      const imp = parseInt(row.impressions, 10);
+      if (reach > 0) frequency = imp / reach;
+    }
+
     return {
       ad_account_id: adAccountId,
       ad_id: row.ad_id,
@@ -408,6 +447,7 @@ async function upsertInsights(
       cpm: row.cpm ? parseFloat(row.cpm) : null,
       cpc: row.cpc ? parseFloat(row.cpc) : null,
       ctr: row.ctr ? parseFloat(row.ctr) : null,
+      frequency,
       updated_at: new Date().toISOString(),
     };
   });

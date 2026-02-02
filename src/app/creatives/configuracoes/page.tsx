@@ -21,12 +21,13 @@ interface GA4Property {
 }
 
 const settingsDisplay = [
-  { label: 'CPA Alvo', value: formatCurrency(DEFAULT_SETTINGS.cpa_target) },
+  { label: 'CPA Alvo (Vendas)', value: formatCurrency(DEFAULT_SETTINGS.cpa_target) },
+  { label: 'CPL Alvo (Captura)', value: formatCurrency(DEFAULT_SETTINGS.cpl_target) },
   { label: 'CTR Benchmark Base', value: `${DEFAULT_SETTINGS.ctr_benchmark.toFixed(1)}%` },
   { label: 'Gasto Minimo para Decisao', value: formatCurrency(DEFAULT_SETTINGS.min_spend) },
   { label: 'Frequencia - Alerta', value: DEFAULT_SETTINGS.frequency_warn.toFixed(1) },
   { label: 'Frequencia - Matar', value: DEFAULT_SETTINGS.frequency_kill.toFixed(1) },
-  { label: 'Multiplicador CPA (Matar)', value: `${DEFAULT_SETTINGS.cpa_kill_multiplier}x` },
+  { label: 'Multiplicador Custo (Matar)', value: `${DEFAULT_SETTINGS.cost_kill_multiplier}x` },
 ];
 
 export default function ConfiguracoesPage() {

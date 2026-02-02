@@ -31,6 +31,7 @@ import {
   DEFAULT_SETTINGS,
   type CreativeMetrics,
   type DecisionStatus,
+  type CampaignType,
 } from '@/lib/decision-engine';
 
 interface DailyRow {
@@ -43,7 +44,6 @@ interface DailyRow {
   cpc: number;
   ctr: number;
   frequency: number;
-  video_views?: number;
 }
 
 interface AdDetail {
@@ -53,6 +53,7 @@ interface AdDetail {
   format: string;
   campaign_id: string;
   campaign_name: string;
+  campaign_type: CampaignType;
   adset_name: string;
 }
 
@@ -81,7 +82,10 @@ export default function DiagnosticoDetailPage() {
 
       if (diagRes.ok) {
         const data = await diagRes.json();
-        setAd(data.ad);
+        setAd(data.ad ? {
+          ...data.ad,
+          campaign_type: data.ad.campaign_type || 'VENDAS',
+        } : null);
         setDaily(data.daily || []);
       }
 
@@ -112,19 +116,26 @@ export default function DiagnosticoDetailPage() {
   const ctr = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0;
   const cpc = totalClicks > 0 ? totalSpend / totalClicks : null;
   const cpm = totalImpressions > 0 ? (totalSpend / totalImpressions) * 1000 : null;
-  const cpa = totalConversions > 0 ? totalSpend / totalConversions : null;
+  const costPerConversion = totalConversions > 0 ? totalSpend / totalConversions : null;
+  const conversionRate = totalClicks > 0 ? (totalConversions / totalClicks) * 100 : 0;
 
-  // Hook Rate: 3-second video views / impressions
-  const totalVideoViews = daily.reduce((s, d) => s + (d.video_views || 0), 0);
-  const hookRate = totalVideoViews > 0 && totalImpressions > 0
-    ? (totalVideoViews / totalImpressions) * 100
+  // Hook Rate = Clicks / Impressions (metric of visual attraction)
+  const hookRate = totalImpressions > 0
+    ? (totalClicks / totalImpressions) * 100
     : null;
+
+  // Campaign type
+  const campaignType: CampaignType = ad?.campaign_type || 'VENDAS';
+  const isCaptura = campaignType === 'CAPTURA';
+  const costLabel = isCaptura ? 'CPL' : 'CPA';
+  const convLabel = isCaptura ? 'Leads' : 'Vendas';
+  const costTarget = isCaptura ? DEFAULT_SETTINGS.cpl_target : DEFAULT_SETTINGS.cpa_target;
 
   // Chart data
   const chartData = daily.map((d) => {
     const dayCtr = d.impressions > 0 ? (d.clicks / d.impressions) * 100 : 0;
-    const dayHookRate = d.video_views && d.impressions > 0
-      ? (d.video_views / d.impressions) * 100
+    const dayHookRate = d.impressions > 0
+      ? (d.clicks / d.impressions) * 100
       : null;
     return {
       label: fmtDate(parseISO(d.date), 'dd/MM', { locale: ptBR }),
@@ -142,15 +153,17 @@ export default function DiagnosticoDetailPage() {
     format: ad?.format || '',
     campaign_id: ad?.campaign_id || '',
     campaign_name: ad?.campaign_name || '',
+    campaign_type: campaignType,
     ctr,
     compras: totalConversions,
-    cpa,
+    cpa: costPerConversion,
     frequency: avgFrequency,
     spend: totalSpend,
     impressions: totalImpressions,
     clicks: totalClicks,
     cpc,
     cpm,
+    hook_rate: hookRate,
   };
 
   const accountCtr = calculateAccountBenchmarkCTR(accountCreatives);
@@ -187,6 +200,9 @@ export default function DiagnosticoDetailPage() {
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg font-bold truncate max-w-[400px]">{ad?.name || adId}</h1>
                   <StatusBadge status={status as DecisionStatus} />
+                  <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${isCaptura ? 'bg-purple-500/10 text-purple-700 dark:text-purple-400' : 'bg-blue-500/10 text-blue-700 dark:text-blue-400'}`}>
+                    {isCaptura ? 'CAPTURA' : 'VENDAS'}
+                  </span>
                 </div>
                 <div className="text-xs text-muted-foreground">
                   {ad?.campaign_name} &middot; {ad?.adset_name}
@@ -204,27 +220,59 @@ export default function DiagnosticoDetailPage() {
           </div>
         )}
 
-        {/* Metrics grid: 5 metrics */}
-        <div className="grid grid-cols-5 gap-3 mb-4">
-          <DiagMetric label="CPC" value={formatCurrency(cpc)} loading={loading} />
-          <DiagMetric label="CPM" value={formatCurrency(cpm)} loading={loading} />
-          <DiagMetric label="Gasto" value={formatCurrency(totalSpend)} loading={loading} />
-          <DiagMetric label="Impressoes" value={formatCompact(totalImpressions)} loading={loading} />
-          <DiagMetric label="Cliques" value={formatNumber(totalClicks)} loading={loading} />
+        {/* Primary metrics row — adapted by campaign type */}
+        <div className={`grid gap-3 mb-4 ${isCaptura ? 'grid-cols-5' : 'grid-cols-5'}`}>
+          {/* Highlight: Cost per conversion (CPA or CPL) */}
+          <DiagMetric
+            label={costLabel}
+            value={formatCurrency(costPerConversion)}
+            sub={`Alvo: ${formatCurrency(costTarget)}`}
+            loading={loading}
+            highlight={costPerConversion !== null && costPerConversion <= costTarget}
+          />
+          <DiagMetric label={convLabel} value={formatNumber(totalConversions)} loading={loading} />
+          {isCaptura ? (
+            <DiagMetric
+              label="Taxa Conv. Pagina"
+              value={formatPercent(conversionRate)}
+              sub={`${totalClicks} cliques → ${totalConversions} leads`}
+              loading={loading}
+            />
+          ) : (
+            <DiagMetric label="Gasto" value={formatCurrency(totalSpend)} loading={loading} />
+          )}
+          <DiagMetric label="CTR" value={formatPercent(ctr)} sub={`Conta: ${formatPercent(accountCtr)}`} loading={loading} />
+          <DiagMetric
+            label="Frequencia"
+            value={avgFrequency > 0 ? avgFrequency.toFixed(1) : '-'}
+            sub={avgFrequency > 0
+              ? (avgFrequency >= DEFAULT_SETTINGS.frequency_kill
+                ? 'CRITICO'
+                : avgFrequency >= DEFAULT_SETTINGS.frequency_warn
+                  ? 'ALERTA'
+                  : 'Normal')
+              : 'Sem dados'}
+            loading={loading}
+            highlight={false}
+          />
         </div>
 
         {/* Secondary metrics row */}
         <div className="grid grid-cols-5 gap-3 mb-4">
-          <DiagMetric label="CTR" value={formatPercent(ctr)} sub={`Conta: ${formatPercent(accountCtr)}`} loading={loading} />
-          <DiagMetric label="Hook Rate" value={hookRate != null ? formatPercent(hookRate) : '-'} sub="Views 3s / Impr." loading={loading} />
-          <DiagMetric label="Vendas" value={formatNumber(totalConversions)} loading={loading} />
-          <DiagMetric label="CPA" value={formatCurrency(cpa)} sub={`Alvo: ${formatCurrency(DEFAULT_SETTINGS.cpa_target)}`} loading={loading} />
-          <DiagMetric
-            label="Frequencia"
-            value={avgFrequency > 0 ? avgFrequency.toFixed(1) : '-'}
-            sub={avgFrequency >= DEFAULT_SETTINGS.frequency_warn ? 'ALERTA' : 'Normal'}
-            loading={loading}
-          />
+          <DiagMetric label="CPC" value={formatCurrency(cpc)} loading={loading} />
+          <DiagMetric label="CPM" value={formatCurrency(cpm)} loading={loading} />
+          {isCaptura ? (
+            <DiagMetric label="Gasto" value={formatCurrency(totalSpend)} loading={loading} />
+          ) : (
+            <DiagMetric
+              label="Taxa Conv."
+              value={formatPercent(conversionRate)}
+              sub={`${totalClicks} cliques → ${totalConversions} vendas`}
+              loading={loading}
+            />
+          )}
+          <DiagMetric label="Impressoes" value={formatCompact(totalImpressions)} loading={loading} />
+          <DiagMetric label="Hook Rate" value={hookRate != null ? formatPercent(hookRate) : '-'} sub={hookRate != null ? 'Cliques / Impr.' : 'Sem impressoes'} loading={loading} />
         </div>
 
         {/* Trend charts */}
@@ -232,7 +280,7 @@ export default function DiagnosticoDetailPage() {
           <div className="grid grid-cols-2 gap-3 mb-4">
             <div className="rounded-lg border bg-card p-3">
               <div className="text-xs font-medium text-muted-foreground mb-2">
-                CTR {hookRate != null ? 'vs Hook Rate' : ''} por Dia
+                Hook Rate por Dia
               </div>
               <ResponsiveContainer width="100%" height={140}>
                 <LineChart data={chartData}>
@@ -244,15 +292,12 @@ export default function DiagnosticoDetailPage() {
                     contentStyle={{ fontSize: 12 }}
                   />
                   <Legend wrapperStyle={{ fontSize: 10 }} />
-                  <Line type="monotone" dataKey="ctr" name="CTR" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={{ r: 2 }} />
-                  {hookRate != null && (
-                    <Line type="monotone" dataKey="hookRate" name="Hook Rate" stroke="hsl(var(--chart-2))" strokeWidth={2} dot={{ r: 2 }} />
-                  )}
+                  <Line type="monotone" dataKey="hookRate" name="Hook Rate" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={{ r: 2 }} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
             <div className="rounded-lg border bg-card p-3">
-              <div className="text-xs font-medium text-muted-foreground mb-2">Cliques vs Vendas por Dia</div>
+              <div className="text-xs font-medium text-muted-foreground mb-2">Cliques vs {convLabel} por Dia</div>
               <ResponsiveContainer width="100%" height={140}>
                 <BarChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
@@ -262,7 +307,7 @@ export default function DiagnosticoDetailPage() {
                   <Tooltip contentStyle={{ fontSize: 12 }} />
                   <Legend wrapperStyle={{ fontSize: 10 }} />
                   <Bar yAxisId="left" dataKey="clicks" name="Cliques" fill="hsl(var(--chart-3))" radius={[3, 3, 0, 0]} opacity={0.7} />
-                  <Bar yAxisId="right" dataKey="conversions" name="Vendas" fill="hsl(var(--chart-2))" radius={[3, 3, 0, 0]} />
+                  <Bar yAxisId="right" dataKey="conversions" name={convLabel} fill="hsl(var(--chart-2))" radius={[3, 3, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -281,7 +326,7 @@ export default function DiagnosticoDetailPage() {
                 <th className="text-right px-3 py-2 font-medium">CPC</th>
                 <th className="text-right px-3 py-2 font-medium">CPM</th>
                 <th className="text-right px-3 py-2 font-medium">Gasto</th>
-                <th className="text-right px-3 py-2 font-medium">Conv.</th>
+                <th className="text-right px-3 py-2 font-medium">{isCaptura ? 'Leads' : 'Conv.'}</th>
                 <th className="text-right px-3 py-2 font-medium">Freq.</th>
                 <th className="text-center px-3 py-2 font-medium">Tend.</th>
               </tr>
@@ -320,7 +365,7 @@ export default function DiagnosticoDetailPage() {
                       <td className="text-right px-3 py-2 font-mono">{formatCurrency(d.impressions > 0 ? (Number(d.spend) / d.impressions) * 1000 : null)}</td>
                       <td className="text-right px-3 py-2 font-mono">{formatCurrency(Number(d.spend))}</td>
                       <td className="text-right px-3 py-2 font-mono">{d.conversions}</td>
-                      <td className="text-right px-3 py-2 font-mono">{Number(d.frequency) > 0 ? Number(d.frequency).toFixed(1) : '-'}</td>
+                      <td className={`text-right px-3 py-2 font-mono ${Number(d.frequency) >= DEFAULT_SETTINGS.frequency_kill ? 'text-red-600 font-bold' : Number(d.frequency) >= DEFAULT_SETTINGS.frequency_warn ? 'text-amber-600' : ''}`}>{Number(d.frequency) > 0 ? Number(d.frequency).toFixed(1) : '-'}</td>
                       <td className="text-center px-3 py-2">
                         <TrendIcon value={dayTrend} />
                       </td>
@@ -340,19 +385,21 @@ function DiagMetric({
   value,
   sub,
   loading,
+  highlight,
 }: {
   label: string;
   value: string;
   sub?: string;
   loading: boolean;
+  highlight?: boolean;
 }) {
   return (
-    <div className="rounded-lg border bg-card p-3">
+    <div className={`rounded-lg border bg-card p-3 ${highlight ? 'border-emerald-500/30 bg-emerald-500/5' : ''}`}>
       <div className="text-xs text-muted-foreground mb-1">{label}</div>
       {loading ? (
         <Skeleton className="h-6 w-16" />
       ) : (
-        <div className="text-lg font-bold">{value}</div>
+        <div className={`text-lg font-bold ${highlight ? 'text-emerald-700 dark:text-emerald-400' : ''}`}>{value}</div>
       )}
       {sub && <div className="text-xs text-muted-foreground mt-0.5">{sub}</div>}
     </div>
