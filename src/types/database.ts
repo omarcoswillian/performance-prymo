@@ -7,6 +7,9 @@ export interface MetaAccount {
   token_expires_at: string | null;
   status: 'active' | 'paused' | 'revoked';
   conversion_event: string;
+  credential_type: 'user' | 'system_user';
+  credential_health: 'healthy' | 'degraded' | 'expired' | 'unknown';
+  credential_checked_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -18,6 +21,9 @@ export interface MetaCampaign {
   name: string;
   objective: string | null;
   status: string;
+  daily_budget: number | null;
+  lifetime_budget: number | null;
+  bid_strategy: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -31,6 +37,10 @@ export interface MetaAdset {
   optimization_goal: string | null;
   billing_event: string | null;
   status: string;
+  daily_budget: number | null;
+  lifetime_budget: number | null;
+  bid_strategy: string | null;
+  bid_amount: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -67,6 +77,8 @@ export interface MetaAdInsightsDaily {
   cpm: number | null;
   cpc: number | null;
   ctr: number | null;
+  frequency: number | null;
+  reach: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -75,7 +87,7 @@ export interface MetaAlert {
   id: string;
   ad_account_id: string;
   ad_id: string | null;
-  type: 'no_conversions' | 'ctr_fatigue' | 'high_cpa' | 'custom';
+  type: 'no_conversions' | 'ctr_fatigue' | 'high_cpa' | 'frequency_fatigue' | 'custom';
   message: string;
   severity: 'info' | 'warning' | 'critical';
   resolved_at: string | null;
@@ -91,6 +103,30 @@ export interface MetaSyncLog {
   completed_at: string | null;
   records_synced: number;
   error_message: string | null;
+  created_at: string;
+}
+
+export interface MetaSettings {
+  id: string;
+  ad_account_id: string;
+  cpa_target: number;
+  ctr_benchmark_mode: 'account_avg' | 'campaign_avg' | 'fixed';
+  ctr_benchmark_fixed: number;
+  min_spend_threshold: number;
+  frequency_warn: number;
+  frequency_kill: number;
+  cpa_kill_multiplier: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MetaAdStatusOverride {
+  id: string;
+  ad_account_id: string;
+  ad_id: string;
+  forced_status: 'ESCALAR' | 'VARIAR' | 'MATAR' | 'FORÇADO';
+  note: string | null;
+  created_by: string | null;
   created_at: string;
 }
 
@@ -116,6 +152,8 @@ export interface AdWithMetrics {
   total_clicks: number;
   total_conversions: number;
   total_conversion_value: number;
+  total_reach: number;
+  roas: number | null;
   calc_ctr: number;
   calc_cpa: number | null;
   calc_cpc: number | null;
@@ -128,11 +166,13 @@ export interface MetricsSummary {
   total_clicks: number;
   total_conversions: number;
   total_conversion_value: number;
+  total_reach: number;
   ctr: number;
   cpa: number | null;
   cpc: number | null;
   cpm: number | null;
   cvr: number;
+  roas: number | null;
 }
 
 export interface DailySeries {
@@ -141,8 +181,10 @@ export interface DailySeries {
   impressions: number;
   clicks: number;
   conversions: number;
+  conversion_value: number;
   ctr: number;
   cpa: number | null;
+  roas: number | null;
 }
 
 export interface PaginatedResponse<T> {

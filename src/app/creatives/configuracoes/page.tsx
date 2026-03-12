@@ -503,27 +503,142 @@ export default function ConfiguracoesPage() {
         </div>
       </div>
 
-      {/* Decision Rules */}
-      <div className="rounded-lg border bg-card p-4 max-w-lg">
-        <div className="flex items-center gap-2 mb-4">
+      {/* Decision Rules — Editable */}
+      <SettingsEditor selectedAccount={selectedAccount} />
+    </div>
+  );
+}
+
+function SettingsEditor({ selectedAccount }: { selectedAccount: string | null }) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [values, setValues] = useState({
+    cpa_target: DEFAULT_SETTINGS.cpa_target,
+    cpl_target: DEFAULT_SETTINGS.cpl_target,
+    min_spend_threshold: DEFAULT_SETTINGS.min_spend,
+    frequency_warn: DEFAULT_SETTINGS.frequency_warn,
+    frequency_kill: DEFAULT_SETTINGS.frequency_kill,
+    cpa_kill_multiplier: DEFAULT_SETTINGS.cost_kill_multiplier,
+  });
+
+  // Load saved settings from DB
+  useEffect(() => {
+    if (!selectedAccount) return;
+    setSaved(false);
+    fetch(`/api/meta/settings?ad_account_id=${selectedAccount}`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data) {
+          setValues(prev => ({
+            ...prev,
+            ...(data.cpa_target != null && { cpa_target: Number(data.cpa_target) }),
+            ...(data.min_spend_threshold != null && { min_spend_threshold: Number(data.min_spend_threshold) }),
+            ...(data.frequency_warn != null && { frequency_warn: Number(data.frequency_warn) }),
+            ...(data.frequency_kill != null && { frequency_kill: Number(data.frequency_kill) }),
+            ...(data.cpa_kill_multiplier != null && { cpa_kill_multiplier: Number(data.cpa_kill_multiplier) }),
+          }));
+        }
+      })
+      .catch(() => {});
+  }, [selectedAccount]);
+
+  const handleSave = async () => {
+    if (!selectedAccount) return;
+    setSaving(true);
+    try {
+      const res = await fetch('/api/meta/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ad_account_id: selectedAccount, ...values }),
+      });
+      if (res.ok) {
+        setSaved(true);
+        setEditing(false);
+        setTimeout(() => setSaved(false), 3000);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const fields = [
+    { key: 'cpa_target' as const, label: 'CPA Alvo (Vendas)', prefix: 'R$' },
+    { key: 'cpl_target' as const, label: 'CPL Alvo (Captura)', prefix: 'R$' },
+    { key: 'min_spend_threshold' as const, label: 'Gasto Minimo para Decisao', prefix: 'R$' },
+    { key: 'frequency_warn' as const, label: 'Frequencia - Alerta', prefix: '' },
+    { key: 'frequency_kill' as const, label: 'Frequencia - Matar', prefix: '' },
+    { key: 'cpa_kill_multiplier' as const, label: 'Multiplicador Custo (Matar)', prefix: '', suffix: 'x' },
+  ];
+
+  return (
+    <div className="rounded-lg border bg-card p-4 max-w-lg">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
           <Settings className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm font-medium">Regras de Decisao</span>
+          {saved && (
+            <span className="text-xs text-emerald-600 flex items-center gap-1">
+              <Check className="h-3 w-3" /> Salvo
+            </span>
+          )}
         </div>
-        <div className="space-y-3">
-          {settingsDisplay.map((s) => (
-            <div
-              key={s.label}
-              className="flex items-center justify-between text-sm"
-            >
-              <span className="text-muted-foreground">{s.label}</span>
-              <span className="font-mono font-medium">{s.value}</span>
-            </div>
-          ))}
+        {!editing && (
+          <button
+            onClick={() => setEditing(true)}
+            className="text-xs text-primary hover:underline"
+          >
+            Editar
+          </button>
+        )}
+      </div>
+      <div className="space-y-3">
+        {fields.map((f) => (
+          <div key={f.key} className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">{f.label}</span>
+            {editing ? (
+              <div className="flex items-center gap-1">
+                {f.prefix && <span className="text-xs text-muted-foreground">{f.prefix}</span>}
+                <input
+                  type="number"
+                  step="0.1"
+                  value={values[f.key]}
+                  onChange={(e) => setValues(prev => ({ ...prev, [f.key]: parseFloat(e.target.value) || 0 }))}
+                  className="w-20 rounded border bg-background px-2 py-1 text-sm text-right font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+                {f.suffix && <span className="text-xs text-muted-foreground">{f.suffix}</span>}
+              </div>
+            ) : (
+              <span className="font-mono font-medium">
+                {f.prefix}{values[f.key]}{f.suffix || ''}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+      {editing && (
+        <div className="flex items-center gap-2 mt-4">
+          <button
+            onClick={handleSave}
+            disabled={saving || !selectedAccount}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+            {saving ? 'Salvando...' : 'Salvar'}
+          </button>
+          <button
+            onClick={() => setEditing(false)}
+            className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+          >
+            Cancelar
+          </button>
         </div>
-        <div className="mt-4 pt-4 border-t text-xs text-muted-foreground">
-          O benchmark de CTR e calculado automaticamente pela media da conta a cada consulta.
-          Edicao de configuracoes sera disponibilizada em breve.
-        </div>
+      )}
+      <div className="mt-4 pt-4 border-t text-xs text-muted-foreground">
+        O benchmark de CTR e calculado automaticamente pela media da conta a cada consulta.
+        {!selectedAccount && <p className="text-amber-600 mt-1">Selecione uma conta para editar as configuracoes.</p>}
       </div>
     </div>
   );

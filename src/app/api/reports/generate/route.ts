@@ -95,7 +95,7 @@ export async function POST(request: NextRequest) {
     // ── 1. Fetch creative data ──────────────────────────────────
     const { data: ads } = await supabase
       .from('meta_ads')
-      .select('ad_id, name, thumbnail_url, format, campaign_id, adset_id, status')
+      .select('ad_id, name, thumbnail_url, format, primary_text, headline, cta, campaign_id, adset_id, status')
       .eq('ad_account_id', ad_account_id)
       .eq('status', 'ACTIVE');
 
@@ -109,7 +109,7 @@ export async function POST(request: NextRequest) {
     const adIds = ads.map((a) => a.ad_id);
     const { data: insights } = await supabase
       .from('meta_ad_insights_daily')
-      .select('ad_id, date, impressions, clicks, spend, conversions, cpm, cpc, ctr')
+      .select('ad_id, date, impressions, clicks, spend, conversions, conversion_value, cpm, cpc, ctr')
       .eq('ad_account_id', ad_account_id)
       .in('ad_id', adIds)
       .gte('date', date_start)
@@ -150,17 +150,24 @@ export async function POST(request: NextRequest) {
           ? rows.reduce((s, r) => s + Number((r as Record<string, unknown>).frequency || 0), 0) / rows.length
           : 0;
 
+        const totalConvValue = rows.reduce((s, r) => s + Number(r.conversion_value || 0), 0);
         return {
           ad_id: ad.ad_id,
           name: ad.name,
           thumbnail_url: ad.thumbnail_url,
           format: ad.format as 'image' | 'video' | 'carousel' | 'unknown',
+          primary_text: ad.primary_text ?? null,
+          headline: ad.headline ?? null,
+          cta: ad.cta ?? null,
           campaign_id: ad.campaign_id,
           campaign_name: campaignMap.get(ad.campaign_id)?.name || ad.campaign_id,
           campaign_type: mapObjective(campaignMap.get(ad.campaign_id)?.objective ?? null),
           ctr: totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0,
           compras: totalConversions,
           cpa: totalConversions > 0 ? totalSpend / totalConversions : null,
+          conversion_value: totalConvValue,
+          roas: totalSpend > 0 && totalConvValue > 0 ? totalConvValue / totalSpend : null,
+          reach: 0,
           frequency: avgFrequency,
           spend: totalSpend,
           impressions: totalImpressions,

@@ -2,12 +2,12 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'next/navigation';
-import Image from 'next/image';
+import { AdThumbnail } from '@/components/creatives/ad-thumbnail';
 import { StatusBadge } from '@/components/creatives/status-badge';
 import { useAccount } from '@/components/creatives/account-context';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, ImageIcon, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { ArrowLeft, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import Link from 'next/link';
 import { format as fmtDate, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -41,10 +41,14 @@ interface DailyRow {
   clicks: number;
   spend: number;
   conversions: number;
+  conversion_value: number;
   cpm: number;
   cpc: number;
   ctr: number;
   frequency: number;
+  video_views_3s: number | null;
+  video_thruplay: number | null;
+  video_avg_play_time: number | null;
 }
 
 interface AdDetail {
@@ -52,10 +56,25 @@ interface AdDetail {
   name: string;
   thumbnail_url: string | null;
   format: string;
+  primary_text: string | null;
+  headline: string | null;
+  cta: string | null;
   campaign_id: string;
   campaign_name: string;
   campaign_type: CampaignType;
   adset_name: string;
+}
+
+interface PlacementRow {
+  publisher_platform: string;
+  platform_position: string;
+  impressions: number;
+  clicks: number;
+  spend: number;
+  conversions: number;
+  ctr: number;
+  cpa: number | null;
+  cpm: number | null;
 }
 
 export default function DiagnosticoDetailPage() {
@@ -65,6 +84,7 @@ export default function DiagnosticoDetailPage() {
 
   const [ad, setAd] = useState<AdDetail | null>(null);
   const [daily, setDaily] = useState<DailyRow[]>([]);
+  const [placements, setPlacements] = useState<PlacementRow[]>([]);
   const [accountCreatives, setAccountCreatives] = useState<CreativeMetrics[]>([]);
   const [settings, setSettings] = useState<DecisionSettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
@@ -89,6 +109,7 @@ export default function DiagnosticoDetailPage() {
           campaign_type: data.ad.campaign_type || 'VENDAS',
         } : null);
         setDaily(data.daily || []);
+        setPlacements(data.placements || []);
         // Use server-resolved settings
         if (data.settings) {
           setSettings(data.settings);
@@ -150,17 +171,24 @@ export default function DiagnosticoDetailPage() {
     };
   });
 
+  const totalConvValue = daily.reduce((s, d) => s + Number(d.conversion_value || 0), 0);
   const creative: CreativeMetrics = {
     ad_id: adId,
     name: ad?.name || '',
     thumbnail_url: ad?.thumbnail_url || null,
     format: ad?.format || '',
+    primary_text: ad?.primary_text || null,
+    headline: ad?.headline || null,
+    cta: ad?.cta || null,
     campaign_id: ad?.campaign_id || '',
     campaign_name: ad?.campaign_name || '',
     campaign_type: campaignType,
     ctr,
     compras: totalConversions,
     cpa: costPerConversion,
+    conversion_value: totalConvValue,
+    roas: totalSpend > 0 && totalConvValue > 0 ? totalConvValue / totalSpend : null,
+    reach: 0,
     frequency: avgFrequency,
     spend: totalSpend,
     impressions: totalImpressions,
@@ -193,13 +221,7 @@ export default function DiagnosticoDetailPage() {
             <Skeleton className="h-6 w-64" />
           ) : (
             <div className="flex items-center gap-3">
-              {ad?.thumbnail_url ? (
-                <Image src={ad.thumbnail_url} alt="" width={40} height={40} className="rounded object-cover" unoptimized />
-              ) : (
-                <div className="flex h-10 w-10 items-center justify-center rounded bg-muted">
-                  <ImageIcon className="h-4 w-4 text-muted-foreground" />
-                </div>
-              )}
+              <AdThumbnail thumbnailUrl={ad?.thumbnail_url} adId={adId as string} size={40} />
               <div>
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg font-bold truncate max-w-[400px]">{ad?.name || adId}</h1>
@@ -316,6 +338,117 @@ export default function DiagnosticoDetailPage() {
             </div>
           </div>
         )}
+
+        {/* Video metrics (only for video format) */}
+        {!loading && ad?.format === 'video' && (() => {
+          const totalViews3s = daily.reduce((s, d) => s + (d.video_views_3s || 0), 0);
+          const totalThruplay = daily.reduce((s, d) => s + (d.video_thruplay || 0), 0);
+          const avgPlayTime = daily.filter(d => d.video_avg_play_time).length > 0
+            ? daily.reduce((s, d) => s + (d.video_avg_play_time || 0), 0) / daily.filter(d => d.video_avg_play_time).length
+            : null;
+          const thruplayRate = totalImpressions > 0 ? (totalThruplay / totalImpressions) * 100 : 0;
+          const hookTo3s = totalImpressions > 0 ? (totalViews3s / totalImpressions) * 100 : 0;
+
+          if (totalViews3s === 0 && totalThruplay === 0) return null;
+
+          return (
+            <div className="mb-4">
+              <div className="text-xs font-medium text-muted-foreground mb-2">Metricas de Video</div>
+              <div className="grid grid-cols-4 gap-3">
+                <DiagMetric label="Views 3s" value={formatCompact(totalViews3s)} sub={`${hookTo3s.toFixed(1)}% das impressoes`} loading={false} />
+                <DiagMetric label="ThruPlay" value={formatCompact(totalThruplay)} sub={`${thruplayRate.toFixed(1)}% das impressoes`} loading={false} />
+                <DiagMetric label="Tempo Medio" value={avgPlayTime != null ? `${avgPlayTime.toFixed(1)}s` : '-'} loading={false} />
+                <DiagMetric label="Retencao 3s→ThruPlay" value={totalViews3s > 0 ? `${((totalThruplay / totalViews3s) * 100).toFixed(1)}%` : '-'} sub="ThruPlay / Views 3s" loading={false} />
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Placement breakdown */}
+        {!loading && placements.length > 0 && (() => {
+          const totalPlacementSpend = placements.reduce((s, p) => s + Number(p.spend), 0);
+          const PLATFORM_LABELS: Record<string, string> = {
+            facebook: 'Facebook',
+            instagram: 'Instagram',
+            audience_network: 'Audience Network',
+            messenger: 'Messenger',
+          };
+          const POSITION_LABELS: Record<string, string> = {
+            feed: 'Feed',
+            story: 'Stories',
+            reels: 'Reels',
+            right_hand_column: 'Coluna Direita',
+            explore: 'Explorar',
+            search: 'Pesquisa',
+            marketplace: 'Marketplace',
+            video_feeds: 'Video Feeds',
+            instream_video: 'In-Stream',
+            an_classic: 'Audience Network',
+            rewarded_video: 'Video Premiado',
+            instagram_explore: 'Explorar',
+            instagram_reels: 'Reels',
+            instagram_stories: 'Stories',
+            instagram_profile_feed: 'Perfil',
+          };
+
+          return (
+            <div className="mb-4">
+              <div className="text-xs font-medium text-muted-foreground mb-2">Performance por Posicionamento</div>
+              <div className="rounded-md border overflow-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50 border-b">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-medium">Plataforma</th>
+                      <th className="text-left px-3 py-2 font-medium">Posicao</th>
+                      <th className="text-right px-3 py-2 font-medium">Gasto</th>
+                      <th className="text-right px-3 py-2 font-medium">% Gasto</th>
+                      <th className="text-right px-3 py-2 font-medium">Impr.</th>
+                      <th className="text-right px-3 py-2 font-medium">Cliques</th>
+                      <th className="text-right px-3 py-2 font-medium">CTR</th>
+                      <th className="text-right px-3 py-2 font-medium">CPM</th>
+                      <th className="text-right px-3 py-2 font-medium">Conv.</th>
+                      <th className="text-right px-3 py-2 font-medium">{costLabel}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {placements.map((p, i) => {
+                      const spendPct = totalPlacementSpend > 0 ? (Number(p.spend) / totalPlacementSpend) * 100 : 0;
+                      return (
+                        <tr key={i} className="border-b hover:bg-muted/50">
+                          <td className="px-3 py-2 font-medium text-xs">
+                            <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                              p.publisher_platform === 'instagram' ? 'bg-purple-500/10 text-purple-700' :
+                              p.publisher_platform === 'facebook' ? 'bg-blue-500/10 text-blue-700' :
+                              'bg-gray-500/10 text-gray-700'
+                            }`}>
+                              {PLATFORM_LABELS[p.publisher_platform] || p.publisher_platform}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-xs">{POSITION_LABELS[p.platform_position] || p.platform_position}</td>
+                          <td className="text-right px-3 py-2 font-mono text-xs">{formatCurrency(Number(p.spend))}</td>
+                          <td className="text-right px-3 py-2 font-mono text-xs">
+                            <div className="flex items-center justify-end gap-1">
+                              <div className="w-12 h-1.5 rounded-full bg-muted overflow-hidden">
+                                <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(spendPct, 100)}%` }} />
+                              </div>
+                              <span>{spendPct.toFixed(0)}%</span>
+                            </div>
+                          </td>
+                          <td className="text-right px-3 py-2 font-mono text-xs">{formatCompact(Number(p.impressions))}</td>
+                          <td className="text-right px-3 py-2 font-mono text-xs">{formatNumber(Number(p.clicks))}</td>
+                          <td className="text-right px-3 py-2 font-mono text-xs">{formatPercent(Number(p.ctr))}</td>
+                          <td className="text-right px-3 py-2 font-mono text-xs">{formatCurrency(p.cpm)}</td>
+                          <td className="text-right px-3 py-2 font-mono text-xs">{Number(p.conversions)}</td>
+                          <td className="text-right px-3 py-2 font-mono text-xs">{formatCurrency(p.cpa)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Daily breakdown table */}
         <div className="flex-1 overflow-auto rounded-md border">

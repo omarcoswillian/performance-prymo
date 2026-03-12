@@ -56,6 +56,7 @@ interface RealtimeData {
   activeUsers: number;
   activePages: number;
   topPages: { pagePath: string; activeUsers: number }[];
+  source: 'ga4' | 'custom' | null;
 }
 
 const statusIcons: Record<PageStatus, React.ComponentType<{ className?: string }>> = {
@@ -151,22 +152,65 @@ export default function PaginasPage() {
 
   const fetchRealtime = useCallback(async () => {
     if (!selectedAccount) return;
+
+    let ga4Data: Record<string, unknown> | null = null;
+    let customData: Record<string, unknown> | null = null;
+
+    // Try GA4 Realtime
+    try {
+      const res = await fetch(`/api/ga4/realtime?ad_account_id=${selectedAccount}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (!data.unavailable && !data.error) {
+          ga4Data = data;
+        }
+      }
+    } catch {
+      // GA4 realtime failed silently
+    }
+
+    // Try custom tracking
     try {
       const res = await fetch(`/api/realtime?ad_account_id=${selectedAccount}`);
       if (res.ok) {
-        const data = await res.json();
-        setRealtime({
-          activeUsers: data.activeUsers ?? 0,
-          activePages: data.activePages ?? 0,
-          topPages: (data.topPages ?? []).map((p: { path: string; activeUsers: number }) => ({
-            pagePath: p.path,
-            activeUsers: p.activeUsers,
-          })),
-        });
+        customData = await res.json();
       }
     } catch {
-      // Silently fail for realtime — not critical
+      // Custom tracking failed silently
     }
+
+    // Prefer GA4 if it returned data
+    if (ga4Data) {
+      const topPages = Array.isArray(ga4Data.topPages) ? ga4Data.topPages : [];
+      setRealtime({
+        activeUsers: Number(ga4Data.activeUsers ?? 0),
+        activePages: Number(ga4Data.activePages ?? 0),
+        topPages: topPages.map((p: { pagePath: string; activeUsers: number }) => ({
+          pagePath: p.pagePath,
+          activeUsers: p.activeUsers,
+        })),
+        source: 'ga4',
+      });
+      return;
+    }
+
+    // Fallback to custom tracking
+    if (customData) {
+      const topPages = Array.isArray(customData.topPages) ? customData.topPages : [];
+      setRealtime({
+        activeUsers: Number(customData.activeUsers ?? 0),
+        activePages: Number(customData.activePages ?? 0),
+        topPages: topPages.map((p: { path: string; activeUsers: number }) => ({
+          pagePath: p.path,
+          activeUsers: p.activeUsers,
+        })),
+        source: 'custom',
+      });
+      return;
+    }
+
+    // Nothing available — still show the block with 0
+    setRealtime({ activeUsers: 0, activePages: 0, topPages: [], source: null });
   }, [selectedAccount]);
 
   // Clear all state when account changes to prevent stale/mixed data
@@ -180,15 +224,15 @@ export default function PaginasPage() {
     fetchData();
   }, [fetchData]);
 
-  // Realtime polling every 15s
+  // Realtime polling every 15s — runs regardless of GA4 page config
   useEffect(() => {
-    if (!selectedAccount || notConfigured) return;
+    if (!selectedAccount) return;
     fetchRealtime();
     realtimeIntervalRef.current = setInterval(fetchRealtime, 15000);
     return () => {
       if (realtimeIntervalRef.current) clearInterval(realtimeIntervalRef.current);
     };
-  }, [selectedAccount, notConfigured, fetchRealtime]);
+  }, [selectedAccount, fetchRealtime]);
 
   const handleSync = async () => {
     if (!selectedAccount || syncing) return;
@@ -211,22 +255,66 @@ export default function PaginasPage() {
     }
   };
 
-  // Not configured state
+  // Not configured state — still show realtime if available
   if (!loading && notConfigured) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center px-6 py-12">
-        <Globe className="h-12 w-12 text-muted-foreground mb-4" />
-        <h2 className="text-lg font-semibold mb-2">GA4 nao configurado</h2>
-        <p className="text-sm text-muted-foreground mb-4 text-center max-w-md">
-          Para ver dados reais de performance de paginas, configure o Property ID do Google Analytics 4 nas configuracoes da conta.
-        </p>
-        <Link
-          href="/creatives/configuracoes"
-          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-        >
-          <Settings className="h-4 w-4" />
-          Ir para Configuracoes
-        </Link>
+      <div className="flex flex-1 flex-col px-6 py-4">
+        {/* Realtime — may still work via GA4 even if page config is missing */}
+        {realtime && (
+          <div className="rounded-lg border border-green-500/20 bg-card p-4 mb-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Radio className="h-4 w-4 text-green-500 animate-pulse" />
+              <span className="text-sm font-medium">Tempo Real</span>
+              <span className="text-[10px] text-muted-foreground ml-auto">
+                {realtime.source === 'ga4' ? 'Google Analytics' : 'Tracking personalizado'} &middot; Atualiza a cada 15s
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex items-center gap-2">
+                <Users className="h-4 w-4 text-green-600" />
+                <div>
+                  <div className="text-lg font-bold">{realtime.activeUsers}</div>
+                  <div className="text-[10px] text-muted-foreground">Usuarios ativos agora</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Globe className="h-4 w-4 text-blue-600" />
+                <div>
+                  <div className="text-lg font-bold">{realtime.activePages}</div>
+                  <div className="text-[10px] text-muted-foreground">Paginas ativas agora</div>
+                </div>
+              </div>
+            </div>
+            {realtime.topPages.length > 0 && (
+              <div className="space-y-1 mt-3">
+                <div className="text-xs font-medium text-muted-foreground">Top paginas agora</div>
+                {realtime.topPages.slice(0, 5).map((p) => (
+                  <div key={p.pagePath} className="flex items-center justify-between text-xs py-1 border-b border-muted last:border-0">
+                    <span className="truncate max-w-[300px] font-mono" title={p.pagePath}>{p.pagePath}</span>
+                    <span className="font-bold text-green-600 ml-2 shrink-0">
+                      {p.activeUsers} {p.activeUsers === 1 ? 'usuario' : 'usuarios'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="flex flex-1 flex-col items-center justify-center py-12">
+          <Globe className="h-12 w-12 text-muted-foreground mb-4" />
+          <h2 className="text-lg font-semibold mb-2">GA4 nao configurado</h2>
+          <p className="text-sm text-muted-foreground mb-4 text-center max-w-md">
+            Para ver dados reais de performance de paginas, configure o Property ID do Google Analytics 4 nas configuracoes da conta.
+          </p>
+          <Link
+            href="/creatives/configuracoes"
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            <Settings className="h-4 w-4" />
+            Ir para Configuracoes
+          </Link>
+        </div>
       </div>
     );
   }
@@ -289,6 +377,50 @@ export default function PaginasPage() {
           )}
         </div>
       </div>
+
+      {/* Realtime block — always visible regardless of page data */}
+      {realtime && (
+        <div className="rounded-lg border border-green-500/20 bg-card p-4 mb-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Radio className="h-4 w-4 text-green-500 animate-pulse" />
+            <span className="text-sm font-medium">Tempo Real</span>
+            <span className="text-[10px] text-muted-foreground ml-auto">
+              {realtime.source === 'ga4' ? 'Google Analytics' : 'Tracking personalizado'} &middot; Atualiza a cada 15s
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-4 mb-3">
+            <div className="flex items-center gap-2">
+              <Users className="h-4 w-4 text-green-600" />
+              <div>
+                <div className="text-lg font-bold">{realtime.activeUsers}</div>
+                <div className="text-[10px] text-muted-foreground">Usuarios ativos agora</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Globe className="h-4 w-4 text-blue-600" />
+              <div>
+                <div className="text-lg font-bold">{realtime.activePages}</div>
+                <div className="text-[10px] text-muted-foreground">Paginas ativas agora</div>
+              </div>
+            </div>
+          </div>
+          {realtime.topPages.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-xs font-medium text-muted-foreground">Top paginas agora</div>
+              {realtime.topPages.slice(0, 5).map((p) => (
+                <div key={p.pagePath} className="flex items-center justify-between text-xs py-1 border-b border-muted last:border-0">
+                  <span className="truncate max-w-[300px] font-mono" title={p.pagePath}>
+                    {p.pagePath}
+                  </span>
+                  <span className="font-bold text-green-600 ml-2 shrink-0">
+                    {p.activeUsers} {p.activeUsers === 1 ? 'usuario' : 'usuarios'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Loading */}
       {loading && (
@@ -375,48 +507,6 @@ export default function PaginasPage() {
               <div className="text-xs text-muted-foreground mt-0.5">Duracao media por sessao</div>
             </div>
           </div>
-
-          {/* Realtime block */}
-          {realtime && (
-            <div className="rounded-lg border border-green-500/20 bg-card p-4 mb-4">
-              <div className="flex items-center gap-2 mb-3">
-                <Radio className="h-4 w-4 text-green-500 animate-pulse" />
-                <span className="text-sm font-medium">Tempo Real</span>
-                <span className="text-[10px] text-muted-foreground ml-auto">Atualiza a cada 15s</span>
-              </div>
-              <div className="grid grid-cols-2 gap-4 mb-3">
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4 text-green-600" />
-                  <div>
-                    <div className="text-lg font-bold">{realtime.activeUsers}</div>
-                    <div className="text-[10px] text-muted-foreground">Usuarios ativos agora</div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Globe className="h-4 w-4 text-blue-600" />
-                  <div>
-                    <div className="text-lg font-bold">{realtime.activePages}</div>
-                    <div className="text-[10px] text-muted-foreground">Paginas ativas agora</div>
-                  </div>
-                </div>
-              </div>
-              {realtime.topPages.length > 0 && (
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-muted-foreground">Top paginas agora</div>
-                  {realtime.topPages.slice(0, 5).map((p) => (
-                    <div key={p.pagePath} className="flex items-center justify-between text-xs py-1 border-b border-muted last:border-0">
-                      <span className="truncate max-w-[300px] font-mono" title={p.pagePath}>
-                        {p.pagePath}
-                      </span>
-                      <span className="font-bold text-green-600 ml-2 shrink-0">
-                        {p.activeUsers} {p.activeUsers === 1 ? 'usuario' : 'usuarios'}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
 
           {/* Rankings: Melhores e Piores */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">

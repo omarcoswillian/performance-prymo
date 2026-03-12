@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import Image from 'next/image';
+import { AdThumbnail } from '@/components/creatives/ad-thumbnail';
 import { useRouter } from 'next/navigation';
 import { StatusBadge } from '@/components/creatives/status-badge';
 import { useAccount } from '@/components/creatives/account-context';
@@ -18,7 +18,6 @@ import {
 import {
   RefreshCw,
   Loader2,
-  ImageIcon,
   MousePointerClick,
   ShoppingCart,
   Target,
@@ -259,13 +258,7 @@ export default function CommandPage() {
                         onClick={() => router.push(`/creatives/diagnostico/${c.ad_id}`)}
                       >
                         <span className="text-xs font-bold text-muted-foreground w-5 shrink-0">#{idx + 1}</span>
-                        {c.thumbnail_url ? (
-                          <Image src={c.thumbnail_url} alt="" width={32} height={32} className="rounded object-cover shrink-0" unoptimized />
-                        ) : (
-                          <div className="flex h-8 w-8 items-center justify-center rounded bg-muted shrink-0">
-                            <ImageIcon className="h-3 w-3 text-muted-foreground" />
-                          </div>
-                        )}
+                        <AdThumbnail thumbnailUrl={c.thumbnail_url} adId={c.ad_id} />
                         <div className="min-w-0 flex-1">
                           <a
                             href={selectedAccount ? getMetaAdsUrl(selectedAccount, c.ad_id) : '#'}
@@ -328,13 +321,7 @@ export default function CommandPage() {
                       onClick={() => router.push(`/creatives/diagnostico/${c.ad_id}`)}
                     >
                       <span className="text-xs font-bold text-muted-foreground w-5 shrink-0">#{idx + 1}</span>
-                      {c.thumbnail_url ? (
-                        <Image src={c.thumbnail_url} alt="" width={32} height={32} className="rounded object-cover shrink-0" unoptimized />
-                      ) : (
-                        <div className="flex h-8 w-8 items-center justify-center rounded bg-muted shrink-0">
-                          <ImageIcon className="h-3 w-3 text-muted-foreground" />
-                        </div>
-                      )}
+                      <AdThumbnail thumbnailUrl={c.thumbnail_url} adId={c.ad_id} />
                       <div className="min-w-0 flex-1">
                         <a
                           href={selectedAccount ? getMetaAdsUrl(selectedAccount, c.ad_id) : '#'}
@@ -450,6 +437,7 @@ export default function CommandPage() {
                 <TableHead className="text-right w-20">Cliques</TableHead>
                 <TableHead className="text-right w-20">Conv.</TableHead>
                 <TableHead className="text-right w-24">Custo/Conv.</TableHead>
+                <TableHead className="text-right w-20">ROAS</TableHead>
                 <TableHead className="text-right w-20">Freq.</TableHead>
                 <TableHead className="text-center w-28">Status</TableHead>
               </TableRow>
@@ -458,14 +446,14 @@ export default function CommandPage() {
               {loading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <TableRow key={i}>
-                    {Array.from({ length: hasMixed ? 9 : 8 }).map((_, j) => (
+                    {Array.from({ length: hasMixed ? 10 : 9 }).map((_, j) => (
                       <TableCell key={j}><Skeleton className="h-5 w-full" /></TableCell>
                     ))}
                   </TableRow>
                 ))
               ) : creatives.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={hasMixed ? 9 : 8} className="text-center py-12 text-muted-foreground">
+                  <TableCell colSpan={hasMixed ? 10 : 9} className="text-center py-12 text-muted-foreground">
                     Nenhum criativo ativo com dados no periodo.
                   </TableCell>
                 </TableRow>
@@ -479,16 +467,10 @@ export default function CommandPage() {
                       onClick={() => router.push(`/creatives/diagnostico/${c.ad_id}`)}
                     >
                       <TableCell>
-                        {c.thumbnail_url ? (
-                          <Image src={c.thumbnail_url} alt="" width={32} height={32} className="rounded object-cover" unoptimized />
-                        ) : (
-                          <div className="flex h-8 w-8 items-center justify-center rounded bg-muted">
-                            <ImageIcon className="h-3 w-3 text-muted-foreground" />
-                          </div>
-                        )}
+                        <AdThumbnail thumbnailUrl={c.thumbnail_url} adId={c.ad_id} />
                       </TableCell>
                       <TableCell>
-                        <div className="max-w-[250px]">
+                        <div className="max-w-[300px]">
                           <a
                             href={selectedAccount ? getMetaAdsUrl(selectedAccount, c.ad_id) : '#'}
                             target="_blank"
@@ -501,6 +483,11 @@ export default function CommandPage() {
                             <ExternalLink className="inline-block ml-1 h-3 w-3 opacity-50" />
                           </a>
                           <div className="text-xs text-muted-foreground truncate">{c.campaign_name}</div>
+                          {c.headline && (
+                            <div className="text-[10px] text-muted-foreground truncate mt-0.5" title={c.primary_text || ''}>
+                              {c.headline}{c.cta ? ` · ${c.cta.replace(/_/g, ' ')}` : ''}
+                            </div>
+                          )}
                         </div>
                       </TableCell>
                       {hasMixed && (
@@ -516,6 +503,7 @@ export default function CommandPage() {
                       <TableCell className="text-right text-sm font-mono">
                         <span title={costLabel}>{formatCurrency(c.cpa)}</span>
                       </TableCell>
+                      <TableCell className="text-right text-sm font-mono">{c.roas != null ? `${c.roas.toFixed(1)}x` : '-'}</TableCell>
                       <TableCell className={`text-right text-sm font-mono ${c.frequency != null && c.frequency >= settings.frequency_kill ? 'text-red-600 font-bold' : c.frequency != null && c.frequency >= settings.frequency_warn ? 'text-amber-600' : ''}`}>{c.frequency != null && c.frequency > 0 ? c.frequency.toFixed(1) : '-'}</TableCell>
                       <TableCell className="text-center">
                         <StatusBadge status={c.status} />

@@ -57,12 +57,14 @@ export function TopHeader() {
 
   const handlePresetChange = (val: string) => {
     if (val === 'custom') {
-      // Initialize range from current dates
+      // Initialize range from current dates and open the calendar
       setRange({
         from: dateStart ? parseISO(dateStart) : undefined,
         to: dateEnd ? parseISO(dateEnd) : undefined,
       });
-      setCustomOpen(true);
+      setPeriodPreset('custom');
+      // Delay to let Radix Select fully close before opening Popover
+      setTimeout(() => setCustomOpen(true), 150);
     } else {
       setPeriodPreset(val as PeriodPreset);
     }

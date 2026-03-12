@@ -37,12 +37,18 @@ export interface CreativeMetrics {
   name: string;
   thumbnail_url: string | null;
   format: string;
+  primary_text: string | null;
+  headline: string | null;
+  cta: string | null;
   campaign_id: string;
   campaign_name: string;
   campaign_type: CampaignType;
   ctr: number;
   compras: number;       // conversions (vendas or leads depending on type)
   cpa: number | null;    // cost per conversion (CPA for vendas, CPL for captura)
+  conversion_value: number;
+  roas: number | null;   // return on ad spend
+  reach: number;
   frequency: number | null;
   spend: number;
   impressions: number;

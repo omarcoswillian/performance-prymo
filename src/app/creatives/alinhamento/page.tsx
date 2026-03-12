@@ -6,14 +6,13 @@ import { Button } from '@/components/ui/button';
 import {
   RefreshCw,
   Loader2,
-  ImageIcon,
   ArrowRight,
   Trophy,
   TrendingUp,
   MousePointerClick,
   type LucideIcon,
 } from 'lucide-react';
-import Image from 'next/image';
+import { AdThumbnail } from '@/components/creatives/ad-thumbnail';
 import Link from 'next/link';
 import { formatCurrency, formatPercent, formatNumber } from '@/lib/format';
 import { useCommandData } from '@/lib/hooks/use-command-data';
@@ -83,20 +82,7 @@ function RankingBlock({
               <span className="text-[10px] font-bold text-muted-foreground w-3 shrink-0">
                 #{idx + 1}
               </span>
-              {item.thumbnail_url ? (
-                <Image
-                  src={item.thumbnail_url}
-                  alt=""
-                  width={24}
-                  height={24}
-                  className="rounded object-cover shrink-0"
-                  unoptimized
-                />
-              ) : (
-                <div className="flex h-6 w-6 items-center justify-center rounded bg-muted shrink-0">
-                  <ImageIcon className="h-2.5 w-2.5 text-muted-foreground" />
-                </div>
-              )}
+              <AdThumbnail thumbnailUrl={item.thumbnail_url} adId={item.ad_id} size={24} />
               <div className="min-w-0 flex-1">
                 <div className="text-[11px] font-medium truncate">{item.name}</div>
                 <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
@@ -344,13 +330,7 @@ export default function AlinhamentoPage() {
                   return (
                     <tr key={c.ad_id} className="border-b hover:bg-muted/50">
                       <td className="px-3 py-2">
-                        {c.thumbnail_url ? (
-                          <Image src={c.thumbnail_url} alt="" width={32} height={32} className="rounded object-cover" unoptimized />
-                        ) : (
-                          <div className="flex h-8 w-8 items-center justify-center rounded bg-muted">
-                            <ImageIcon className="h-3 w-3 text-muted-foreground" />
-                          </div>
-                        )}
+                        <AdThumbnail thumbnailUrl={c.thumbnail_url} adId={c.ad_id} />
                       </td>
                       <td className="px-3 py-2">
                         <div className="max-w-[200px]">

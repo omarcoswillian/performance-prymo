@@ -39,14 +39,30 @@ export async function GET(request: NextRequest) {
     const data = await fetchGA4Realtime(ga4Config.propertyId, ga4Config.hostnames);
     return NextResponse.json(data);
   } catch (error) {
-    // Realtime API may not be available for all properties — return empty data instead of 500
     const msg = error instanceof Error ? error.message : String(error);
-    if (msg.includes('INVALID_ARGUMENT') || msg.includes('PERMISSION_DENIED') || msg.includes('NOT_FOUND')) {
-      return NextResponse.json({ activeUsers: 0, activePages: 0, topPages: [], unavailable: true });
-    }
     console.error('[GA4 Realtime] Error:', msg);
+
+    // Realtime API may not be available for all properties — return empty data instead of 500
+    if (
+      msg.includes('INVALID_ARGUMENT') ||
+      msg.includes('PERMISSION_DENIED') ||
+      msg.includes('NOT_FOUND') ||
+      msg.includes('UNAUTHENTICATED') ||
+      msg.includes('RESOURCE_EXHAUSTED') ||
+      msg.includes('credentials') ||
+      msg.includes('GA4_CLIENT_EMAIL')
+    ) {
+      return NextResponse.json({
+        activeUsers: 0,
+        activePages: 0,
+        topPages: [],
+        unavailable: true,
+        reason: msg.substring(0, 200),
+      });
+    }
+
     return NextResponse.json(
-      { error: 'Erro interno ao buscar dados em tempo real.' },
+      { error: 'Erro interno ao buscar dados em tempo real.', unavailable: true },
       { status: 500 }
     );
   }

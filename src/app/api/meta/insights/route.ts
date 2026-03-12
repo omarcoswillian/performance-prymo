@@ -13,6 +13,9 @@ import {
   type CreativeMetrics,
 } from '@/lib/decision-engine';
 
+// Deduplication: track in-flight fire-and-forget operations to prevent duplicate API calls
+const inFlightOps = new Set<string>();
+
 /**
  * Maps Meta Ads campaign objective to our CampaignType.
  * Default fallback: VENDAS
@@ -115,8 +118,10 @@ export async function GET(request: NextRequest) {
 
         const adsData: Array<{
           ad_id: string; impressions: number; clicks: number;
-          spend: number; conversions: number; name: string;
+          spend: number; conversions: number; conversion_value: number;
+          reach: number; roas: number | null; name: string;
           thumbnail_url: string | null; format: string;
+          primary_text: string | null; headline: string | null; cta: string | null;
           campaign_id: string; adset_id: string; status: string;
           avg_frequency: number | null;
         }> = byAdResult.data || [];
@@ -140,12 +145,16 @@ export async function GET(request: NextRequest) {
           const clk = Number(ad.clicks);
           const spd = Number(ad.spend);
           const conv = Number(ad.conversions);
+          const convVal = Number(ad.conversion_value || 0);
           const campInfo = ad.campaign_id ? campaignMap.get(ad.campaign_id) : null;
           return {
             ad_id: ad.ad_id,
             name: ad.name,
             thumbnail_url: ad.thumbnail_url,
             format: ad.format,
+            primary_text: ad.primary_text ?? null,
+            headline: ad.headline ?? null,
+            cta: ad.cta ?? null,
             campaign_id: ad.campaign_id,
             campaign_name: campInfo?.name || ad.campaign_id || '',
             campaign_type: mapObjectiveToCampaignType(campInfo?.objective ?? null),
@@ -153,6 +162,9 @@ export async function GET(request: NextRequest) {
             ctr: imp > 0 ? (clk / imp * 100) : 0,
             compras: conv,
             cpa: conv > 0 ? spd / conv : null,
+            conversion_value: convVal,
+            roas: spd > 0 && convVal > 0 ? convVal / spd : null,
+            reach: Number(ad.reach || 0),
             frequency: ad.avg_frequency != null ? Number(ad.avg_frequency) : null,
             spend: spd,
             impressions: imp,
@@ -167,20 +179,24 @@ export async function GET(request: NextRequest) {
         const ctr_benchmark = calculateAccountBenchmarkCTR(rawCreatives);
         const creatives = applyDecisions(rawCreatives, effectiveSettings, overridesMap);
 
-        // Background: repair missing frequency — fire and forget, shows on next reload
+        // Background: repair missing frequency — deduplicated fire and forget
         const hasAnyFrequency = rawCreatives.some(c => c.frequency != null && (c.frequency as number) > 0);
-        if (!hasAnyFrequency && rawCreatives.length > 0) {
-          fetchLiveFrequencyBulk(adAccountId, dateStart, dateEnd).catch(err =>
-            console.warn('[Insights] Bulk frequency fetch failed:', err instanceof Error ? err.message : err)
-          );
+        const freqKey = `freq:${adAccountId}:${dateStart}:${dateEnd}`;
+        if (!hasAnyFrequency && rawCreatives.length > 0 && !inFlightOps.has(freqKey)) {
+          inFlightOps.add(freqKey);
+          fetchLiveFrequencyBulk(adAccountId, dateStart, dateEnd)
+            .catch(err => console.warn('[Insights] Bulk frequency fetch failed:', err instanceof Error ? err.message : err))
+            .finally(() => inFlightOps.delete(freqKey));
         }
 
-        // Background: repair missing thumbnails by fetching from Meta API
+        // Background: repair missing thumbnails — deduplicated
         const missingThumbAds = adsData.filter(a => !a.thumbnail_url);
-        if (missingThumbAds.length > 0) {
-          repairMissingThumbnails(adAccountId, missingThumbAds.map(a => a.ad_id)).catch(err =>
-            console.error('[Insights] Thumbnail repair failed:', err instanceof Error ? err.message : err)
-          );
+        const thumbKey = `thumb:${adAccountId}`;
+        if (missingThumbAds.length > 0 && !inFlightOps.has(thumbKey)) {
+          inFlightOps.add(thumbKey);
+          repairMissingThumbnails(adAccountId, missingThumbAds.map(a => a.ad_id))
+            .catch(err => console.error('[Insights] Thumbnail repair failed:', err instanceof Error ? err.message : err))
+            .finally(() => inFlightOps.delete(thumbKey));
         }
 
         const daily_totals: Array<{
@@ -296,10 +312,19 @@ export async function GET(request: NextRequest) {
           adsetName = adsetResult.data?.name || '';
         }
 
+        // Fetch placement breakdown for this ad
+        const { data: placementData } = await supabase.rpc('get_placement_breakdown', {
+          p_ad_account_id: adAccountId,
+          p_date_start: dateStart,
+          p_date_end: dateEnd,
+          p_ad_id: adId,
+        });
+
         return NextResponse.json({
           ad: ad ? { ...ad, campaign_name: campaignName, adset_name: adsetName, campaign_type: campaignType } : null,
           daily: enrichedDaily,
           settings: diagEffectiveSettings,
+          placements: placementData || [],
         });
       }
 

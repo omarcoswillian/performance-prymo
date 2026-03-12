@@ -1,6 +1,6 @@
 'use client';
 
-import Image from 'next/image';
+import { AdThumbnail } from '@/components/creatives/ad-thumbnail';
 import Link from 'next/link';
 import { StatusBadge } from '@/components/creatives/status-badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -10,7 +10,6 @@ import {
   MousePointerClick,
   Zap,
   TrendingUp,
-  ImageIcon,
   ArrowRight,
   type LucideIcon,
 } from 'lucide-react';
@@ -90,20 +89,7 @@ function InsightBlock({
                 <span className="text-xs font-bold text-muted-foreground w-4 shrink-0">
                   #{idx + 1}
                 </span>
-                {item.thumbnail_url ? (
-                  <Image
-                    src={item.thumbnail_url}
-                    alt=""
-                    width={28}
-                    height={28}
-                    className="rounded object-cover shrink-0"
-                    unoptimized
-                  />
-                ) : (
-                  <div className="flex h-7 w-7 items-center justify-center rounded bg-muted shrink-0">
-                    <ImageIcon className="h-3 w-3 text-muted-foreground" />
-                  </div>
-                )}
+                <AdThumbnail thumbnailUrl={item.thumbnail_url} adId={item.ad_id} size={28} />
                 <div className="min-w-0 flex-1">
                   <div className="text-xs font-medium truncate">{item.name}</div>
                   <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">

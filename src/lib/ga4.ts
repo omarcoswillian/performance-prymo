@@ -435,11 +435,11 @@ export async function fetchGA4Realtime(
 ): Promise<GA4RealtimeData> {
   const client = getClient();
 
-  // Note: GA4 Realtime API does not support hostName dimension filter.
-  // Filtering is not applied here — realtime data is property-wide.
+  // GA4 Realtime API: use 'unifiedScreenName' — works for both web and app streams.
+  // 'unifiedPagePathScreen' is NOT supported by the Realtime API (only regular reports).
   const [response] = await client.runRealtimeReport({
     property: `properties/${propertyId}`,
-    dimensions: [{ name: 'unifiedPagePathScreen' }],
+    dimensions: [{ name: 'unifiedScreenName' }],
     metrics: [{ name: 'activeUsers' }],
   });
 

@@ -11,6 +11,9 @@ export const maxDuration = 60;
  *
  * Syncs a single account. Called by the main cron dispatcher.
  * Protected by CRON_SECRET.
+ *
+ * Uses incremental sync: only last 7 days for cron (daily),
+ * full 365 days only on manual sync via query param.
  */
 export async function POST(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
@@ -20,13 +23,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { ad_account_id, access_token, conversion_event, credential_type } = await request.json();
+  const { ad_account_id, access_token, conversion_event, credential_type, full_sync } = await request.json();
 
   if (!ad_account_id || !access_token) {
     return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
   }
 
-  const { dateStart, dateEnd } = resolveDateRange(365);
+  // Incremental: 7 days for daily cron, 365 only when explicitly requested
+  const syncDays = full_sync ? 365 : 7;
+  const { dateStart, dateEnd } = resolveDateRange(syncDays);
 
   try {
     await runFullSync(ad_account_id, access_token, conversion_event, dateStart, dateEnd, credential_type || 'user');
@@ -40,7 +45,7 @@ export async function POST(request: NextRequest) {
       console.warn(`[Cron] GA4 sync skipped for ${ad_account_id}:`, ga4Err);
     }
 
-    return NextResponse.json({ ad_account_id, success: true });
+    return NextResponse.json({ ad_account_id, success: true, days_synced: syncDays });
   } catch (err) {
     console.error(`[Cron] Failed to sync ${ad_account_id}:`, err);
     return NextResponse.json({

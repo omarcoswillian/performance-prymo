@@ -34,7 +34,14 @@ export class MetaApiException extends Error {
   }
 
   get isRateLimit(): boolean {
-    return this.code === 32 || this.code === 4 || this.subcode === 2446079;
+    return (
+      this.code === 32 ||
+      this.code === 4 ||
+      this.subcode === 2446079 ||
+      this.subcode === 2446077 ||
+      this.code === 17 ||
+      this.subcode === 1200
+    );
   }
 
   get isTokenExpired(): boolean {
@@ -109,22 +116,44 @@ export async function metaApiFetchAll<T>(
   allData.push(...firstResponse.data);
   nextUrl = firstResponse.paging?.next ?? null;
 
-  // Follow pagination
+  // Follow pagination with retry counter
+  let paginationRetries = 0;
+  const MAX_PAGINATION_RETRIES = 5;
+
   while (nextUrl) {
-    const response = await fetch(nextUrl);
-    const body = await response.json();
+    try {
+      const response = await fetch(nextUrl);
+      const body = await response.json();
 
-    if (body.error) {
-      const exception = new MetaApiException(body.error);
-      if (exception.isRateLimit) {
-        await sleep(INITIAL_BACKOFF_MS * 2);
-        continue; // Retry same page
+      if (body.error) {
+        const exception = new MetaApiException(body.error);
+        if (exception.isRateLimit && paginationRetries < MAX_PAGINATION_RETRIES) {
+          paginationRetries++;
+          const backoff = INITIAL_BACKOFF_MS * Math.pow(2, paginationRetries);
+          const jitter = Math.random() * 1000;
+          console.warn(
+            `[Meta API] Pagination rate limited. Retrying in ${backoff + jitter}ms (attempt ${paginationRetries}/${MAX_PAGINATION_RETRIES})`
+          );
+          await sleep(backoff + jitter);
+          continue; // Retry same page
+        }
+        throw exception;
       }
-      throw exception;
-    }
 
-    allData.push(...(body.data || []));
-    nextUrl = body.paging?.next ?? null;
+      paginationRetries = 0; // Reset on success
+      allData.push(...(body.data || []));
+      nextUrl = body.paging?.next ?? null;
+    } catch (err) {
+      // Network errors during pagination
+      if (!(err instanceof MetaApiException) && paginationRetries < MAX_PAGINATION_RETRIES) {
+        paginationRetries++;
+        const backoff = INITIAL_BACKOFF_MS * Math.pow(2, paginationRetries);
+        console.warn(`[Meta API] Pagination network error, retrying in ${backoff}ms`);
+        await sleep(backoff);
+        continue;
+      }
+      throw err;
+    }
   }
 
   return allData;
