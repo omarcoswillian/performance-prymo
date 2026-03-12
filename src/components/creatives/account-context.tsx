@@ -10,7 +10,7 @@ interface Account {
   name: string;
 }
 
-export type PeriodPreset = 'today' | 'yesterday' | '7' | '14' | '30' | 'custom';
+export type PeriodPreset = 'today' | 'yesterday' | '7' | '14' | '30' | '45' | '60' | '90' | '180' | '365' | 'custom';
 
 // Keep backward compat alias
 export type PeriodDays = 7 | 14 | 30;
@@ -63,10 +63,15 @@ const PRESET_LABELS: Record<PeriodPreset, string> = {
   '7': '7 dias',
   '14': '14 dias',
   '30': '30 dias',
+  '45': '45 dias',
+  '60': '60 dias',
+  '90': '90 dias',
+  '180': '6 meses',
+  '365': '1 ano',
   custom: 'Personalizado',
 };
 
-const VALID_PRESETS: PeriodPreset[] = ['today', 'yesterday', '7', '14', '30', 'custom'];
+const VALID_PRESETS: PeriodPreset[] = ['today', 'yesterday', '7', '14', '30', '45', '60', '90', '180', '365', 'custom'];
 
 function computeDates(preset: PeriodPreset, customStart: string, customEnd: string) {
   // Use Brazil timezone to ensure "today" is correct for -03:00 users
@@ -76,36 +81,21 @@ function computeDates(preset: PeriodPreset, customStart: string, customEnd: stri
   let dateStart: string;
   let dateEnd: string;
 
-  switch (preset) {
-    case 'today':
-      dateStart = todayStr;
-      dateEnd = todayStr;
-      break;
-    case 'yesterday': {
-      const y = format(subDays(today, 1), 'yyyy-MM-dd');
-      dateStart = y;
-      dateEnd = y;
-      break;
-    }
-    case '7':
-      dateStart = format(subDays(today, 7), 'yyyy-MM-dd');
-      dateEnd = todayStr;
-      break;
-    case '14':
-      dateStart = format(subDays(today, 14), 'yyyy-MM-dd');
-      dateEnd = todayStr;
-      break;
-    case '30':
-      dateStart = format(subDays(today, 30), 'yyyy-MM-dd');
-      dateEnd = todayStr;
-      break;
-    case 'custom':
-      dateStart = customStart || format(subDays(today, 7), 'yyyy-MM-dd');
-      dateEnd = customEnd || todayStr;
-      break;
-    default:
-      dateStart = format(subDays(today, 7), 'yyyy-MM-dd');
-      dateEnd = todayStr;
+  if (preset === 'today') {
+    dateStart = todayStr;
+    dateEnd = todayStr;
+  } else if (preset === 'yesterday') {
+    const y = format(subDays(today, 1), 'yyyy-MM-dd');
+    dateStart = y;
+    dateEnd = y;
+  } else if (preset === 'custom') {
+    dateStart = customStart || format(subDays(today, 7), 'yyyy-MM-dd');
+    dateEnd = customEnd || todayStr;
+  } else {
+    // Numeric presets: '7', '14', '30', '45', '60', '90'
+    const days = parseInt(preset, 10) || 7;
+    dateStart = format(subDays(today, days), 'yyyy-MM-dd');
+    dateEnd = todayStr;
   }
 
   // Previous period: same duration, ending the day before dateStart
@@ -148,9 +138,9 @@ export function AccountProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setCustomRange = useCallback((start: string, end: string) => {
-    // Clamp to max 90 days
+    // Clamp to max 730 days (2 years — Meta API supports up to 37 months)
     const diff = differenceInDays(parseISO(end), parseISO(start));
-    const clampedStart = diff > 90 ? format(subDays(parseISO(end), 90), 'yyyy-MM-dd') : start;
+    const clampedStart = diff > 730 ? format(subDays(parseISO(end), 730), 'yyyy-MM-dd') : start;
     setCustomStart(clampedStart);
     setCustomEnd(end);
     setPeriodPresetState('custom');

@@ -173,11 +173,11 @@ export function generateCreativeReport(
     );
   }
 
-  if (creative.frequency >= DEFAULT_SETTINGS.frequency_kill) {
+  if (creative.frequency != null && creative.frequency >= DEFAULT_SETTINGS.frequency_kill) {
     reasons.push(
       `Frequencia critica (${creative.frequency.toFixed(1)}) — publico ja saturado`
     );
-  } else if (creative.frequency >= DEFAULT_SETTINGS.frequency_warn) {
+  } else if (creative.frequency != null && creative.frequency >= DEFAULT_SETTINGS.frequency_warn) {
     reasons.push(
       `Frequencia em alerta (${creative.frequency.toFixed(1)}) — proximo da saturacao`
     );
@@ -211,7 +211,7 @@ export function generateCreativeReport(
       } else if (creative.compras === 0 && creative.ctr >= ctrBenchmark) {
         action =
           'CTR bom mas sem conversao — problema provavelmente na pagina de destino ou oferta. Revisar landing page.';
-      } else if (creative.frequency >= DEFAULT_SETTINGS.frequency_warn) {
+      } else if (creative.frequency != null && creative.frequency >= DEFAULT_SETTINGS.frequency_warn) {
         action =
           'Criar variacao deste criativo com novo hook ou angulo para combater fadiga.';
       } else {
@@ -441,7 +441,7 @@ export function generateFullReport(
 
   // Fatigue recommendations
   const fatigued = variar.filter(
-    (c) => c.frequency >= settings.frequency_warn
+    (c) => c.frequency != null && c.frequency >= settings.frequency_warn
   );
   if (fatigued.length > 0) {
     sugestoes.push(

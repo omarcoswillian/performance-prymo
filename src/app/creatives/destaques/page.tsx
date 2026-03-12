@@ -1,10 +1,8 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { StatusBadge } from '@/components/creatives/status-badge';
-import { useAccount } from '@/components/creatives/account-context';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Trophy,
@@ -17,12 +15,8 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { formatCurrency, formatPercent } from '@/lib/format';
-import {
-  applyDecisions,
-  DEFAULT_SETTINGS,
-  type CreativeWithDecision,
-  type CreativeMetrics,
-} from '@/lib/decision-engine';
+import { useCommandData } from '@/lib/hooks/use-command-data';
+import type { CreativeWithDecision } from '@/lib/decision-engine';
 
 // --------------- InsightBlock component ---------------
 
@@ -131,56 +125,20 @@ function InsightBlock({
   );
 }
 
-/** Labels adapted per campaign type */
-function getLabels(c: CreativeWithDecision) {
-  if (c.campaign_type === 'CAPTURA') {
-    return { convLabel: 'leads', costLabel: 'CPL', costTarget: DEFAULT_SETTINGS.cpl_target };
-  }
-  return { convLabel: 'vendas', costLabel: 'CPA', costTarget: DEFAULT_SETTINGS.cpa_target };
-}
-
 // --------------- Page ---------------
 
 export default function DestaquesPage() {
-  const { selectedAccount, dateStart, dateEnd } = useAccount();
-  const [creatives, setCreatives] = useState<CreativeWithDecision[]>([]);
-  const [ctrBenchmark, setCtrBenchmark] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const { creatives, settings, ctrBenchmark, loading } = useCommandData();
 
-  const fetchData = useCallback(async () => {
-    if (!selectedAccount || !dateStart || !dateEnd) return;
-    setLoading(true);
-    try {
-      const res = await fetch(
-        `/api/meta/insights?ad_account_id=${selectedAccount}&date_start=${dateStart}&date_end=${dateEnd}&type=command`
-      );
-      if (res.ok) {
-        const data = await res.json();
-        const raw: CreativeMetrics[] = data.creatives || [];
-        const withDecisions = applyDecisions(raw, DEFAULT_SETTINGS, {});
-        setCreatives(withDecisions);
-        setCtrBenchmark(
-          raw.length > 0
-            ? (raw.reduce((s, c) => s + c.clicks, 0) /
-                raw.reduce((s, c) => s + c.impressions, 0)) *
-                100
-            : 0
-        );
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
+  /** Labels adapted per campaign type */
+  function getLabels(c: CreativeWithDecision) {
+    if (c.campaign_type === 'CAPTURA') {
+      return { convLabel: 'leads', costLabel: 'CPL', costTarget: settings.cpl_target };
     }
-  }, [selectedAccount, dateStart, dateEnd]);
-
-  useEffect(() => {
-    setCreatives([]);
-    fetchData();
-  }, [fetchData]);
+    return { convLabel: 'vendas', costLabel: 'CPA', costTarget: settings.cpa_target };
+  }
 
   // ---- Bloco 1: Melhores Criativos ----
-  // Ranked by cost metric (CPA/CPL asc), then conversions desc — CTR NOT in ranking
   const melhores = creatives
     .filter((c) => c.status !== 'MATAR' && c.compras > 0)
     .sort((a, b) => {
@@ -192,22 +150,18 @@ export default function DestaquesPage() {
     .slice(0, 5);
 
   // ---- Bloco 2: Piores Criativos ----
-  const minSpend = DEFAULT_SETTINGS.min_spend;
-
   const piores = creatives
     .filter((c) => {
       if (c.status === 'MATAR') return true;
-      if (c.spend >= minSpend && c.compras === 0) return true;
+      if (c.spend >= settings.min_spend && c.compras === 0) return true;
       const { costTarget } = getLabels(c);
-      if (c.cpa !== null && c.cpa > costTarget * DEFAULT_SETTINGS.cost_kill_multiplier) return true;
+      if (c.cpa !== null && c.cpa > costTarget * settings.cost_kill_multiplier) return true;
       return false;
     })
     .sort((a, b) => {
-      // Wasted spend desc
       const wasteA = a.compras === 0 ? a.spend : 0;
       const wasteB = b.compras === 0 ? b.spend : 0;
       if (wasteB !== wasteA) return wasteB - wasteA;
-      // Cost ratio desc
       const { costTarget: targetA } = getLabels(a);
       const { costTarget: targetB } = getLabels(b);
       const ratioA = a.cpa !== null ? a.cpa / targetA : 0;
@@ -234,12 +188,11 @@ export default function DestaquesPage() {
     .slice(0, 5);
 
   // ---- Bloco 4: Hook Forte, Conversao Fraca ----
-  // CTR used here correctly — as visual attraction indicator
   const hookForte = creatives
     .filter((c) => {
       if (c.ctr < ctrBenchmark) return false;
       const { costTarget } = getLabels(c);
-      const noConv = c.compras === 0 && c.spend >= minSpend;
+      const noConv = c.compras === 0 && c.spend >= settings.min_spend;
       const costBad = c.cpa !== null && c.cpa > costTarget;
       return noConv || costBad;
     })

@@ -28,6 +28,11 @@ const presetOptions: { value: PeriodPreset; label: string }[] = [
   { value: '7', label: '7 dias' },
   { value: '14', label: '14 dias' },
   { value: '30', label: '30 dias' },
+  { value: '45', label: '45 dias' },
+  { value: '60', label: '60 dias' },
+  { value: '90', label: '90 dias' },
+  { value: '180', label: '6 meses' },
+  { value: '365', label: '1 ano' },
   { value: 'custom', label: 'Personalizado' },
 ];
 
@@ -127,7 +132,7 @@ export function TopHeader() {
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-sm font-medium">Periodo personalizado</div>
-                  <div className="text-xs text-muted-foreground">Maximo 90 dias</div>
+                  <div className="text-xs text-muted-foreground">Selecione o periodo desejado</div>
                 </div>
                 {range?.from && (
                   <div className="text-xs text-muted-foreground text-right">

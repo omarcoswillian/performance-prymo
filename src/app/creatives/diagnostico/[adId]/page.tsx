@@ -30,6 +30,7 @@ import {
   generateDiagnosticText,
   DEFAULT_SETTINGS,
   type CreativeMetrics,
+  type DecisionSettings,
   type DecisionStatus,
   type CampaignType,
 } from '@/lib/decision-engine';
@@ -65,6 +66,7 @@ export default function DiagnosticoDetailPage() {
   const [ad, setAd] = useState<AdDetail | null>(null);
   const [daily, setDaily] = useState<DailyRow[]>([]);
   const [accountCreatives, setAccountCreatives] = useState<CreativeMetrics[]>([]);
+  const [settings, setSettings] = useState<DecisionSettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
@@ -87,6 +89,10 @@ export default function DiagnosticoDetailPage() {
           campaign_type: data.ad.campaign_type || 'VENDAS',
         } : null);
         setDaily(data.daily || []);
+        // Use server-resolved settings
+        if (data.settings) {
+          setSettings(data.settings);
+        }
       }
 
       if (cmdRes.ok) {
@@ -119,7 +125,6 @@ export default function DiagnosticoDetailPage() {
   const costPerConversion = totalConversions > 0 ? totalSpend / totalConversions : null;
   const conversionRate = totalClicks > 0 ? (totalConversions / totalClicks) * 100 : 0;
 
-  // Hook Rate = Clicks / Impressions (metric of visual attraction)
   const hookRate = totalImpressions > 0
     ? (totalClicks / totalImpressions) * 100
     : null;
@@ -129,17 +134,16 @@ export default function DiagnosticoDetailPage() {
   const isCaptura = campaignType === 'CAPTURA';
   const costLabel = isCaptura ? 'CPL' : 'CPA';
   const convLabel = isCaptura ? 'Leads' : 'Vendas';
-  const costTarget = isCaptura ? DEFAULT_SETTINGS.cpl_target : DEFAULT_SETTINGS.cpa_target;
+  const costTarget = isCaptura ? settings.cpl_target : settings.cpa_target;
 
   // Chart data
   const chartData = daily.map((d) => {
-    const dayCtr = d.impressions > 0 ? (d.clicks / d.impressions) * 100 : 0;
     const dayHookRate = d.impressions > 0
       ? (d.clicks / d.impressions) * 100
       : null;
     return {
       label: fmtDate(parseISO(d.date), 'dd/MM', { locale: ptBR }),
-      ctr: Number(dayCtr.toFixed(2)),
+      ctr: Number((d.impressions > 0 ? (d.clicks / d.impressions) * 100 : 0).toFixed(2)),
       hookRate: dayHookRate ? Number(dayHookRate.toFixed(2)) : null,
       clicks: d.clicks,
       conversions: d.conversions,
@@ -167,8 +171,8 @@ export default function DiagnosticoDetailPage() {
   };
 
   const accountCtr = calculateAccountBenchmarkCTR(accountCreatives);
-  const { status } = calculateStatus(creative, { ...DEFAULT_SETTINGS, ctr_benchmark: accountCtr });
-  const diagnosticText = generateDiagnosticText(creative, DEFAULT_SETTINGS, accountCtr);
+  const { status } = calculateStatus(creative, { ...settings, ctr_benchmark: accountCtr });
+  const diagnosticText = generateDiagnosticText(creative, settings, accountCtr);
 
   function TrendIcon({ value }: { value: number }) {
     if (value > 0.1) return <TrendingUp className="h-3.5 w-3.5 text-emerald-600" />;
@@ -220,9 +224,8 @@ export default function DiagnosticoDetailPage() {
           </div>
         )}
 
-        {/* Primary metrics row — adapted by campaign type */}
+        {/* Primary metrics row */}
         <div className={`grid gap-3 mb-4 ${isCaptura ? 'grid-cols-5' : 'grid-cols-5'}`}>
-          {/* Highlight: Cost per conversion (CPA or CPL) */}
           <DiagMetric
             label={costLabel}
             value={formatCurrency(costPerConversion)}
@@ -246,9 +249,9 @@ export default function DiagnosticoDetailPage() {
             label="Frequencia"
             value={avgFrequency > 0 ? avgFrequency.toFixed(1) : '-'}
             sub={avgFrequency > 0
-              ? (avgFrequency >= DEFAULT_SETTINGS.frequency_kill
+              ? (avgFrequency >= settings.frequency_kill
                 ? 'CRITICO'
-                : avgFrequency >= DEFAULT_SETTINGS.frequency_warn
+                : avgFrequency >= settings.frequency_warn
                   ? 'ALERTA'
                   : 'Normal')
               : 'Sem dados'}
@@ -365,7 +368,7 @@ export default function DiagnosticoDetailPage() {
                       <td className="text-right px-3 py-2 font-mono">{formatCurrency(d.impressions > 0 ? (Number(d.spend) / d.impressions) * 1000 : null)}</td>
                       <td className="text-right px-3 py-2 font-mono">{formatCurrency(Number(d.spend))}</td>
                       <td className="text-right px-3 py-2 font-mono">{d.conversions}</td>
-                      <td className={`text-right px-3 py-2 font-mono ${Number(d.frequency) >= DEFAULT_SETTINGS.frequency_kill ? 'text-red-600 font-bold' : Number(d.frequency) >= DEFAULT_SETTINGS.frequency_warn ? 'text-amber-600' : ''}`}>{Number(d.frequency) > 0 ? Number(d.frequency).toFixed(1) : '-'}</td>
+                      <td className={`text-right px-3 py-2 font-mono ${Number(d.frequency) >= settings.frequency_kill ? 'text-red-600 font-bold' : Number(d.frequency) >= settings.frequency_warn ? 'text-amber-600' : ''}`}>{Number(d.frequency) > 0 ? Number(d.frequency).toFixed(1) : '-'}</td>
                       <td className="text-center px-3 py-2">
                         <TrendIcon value={dayTrend} />
                       </td>

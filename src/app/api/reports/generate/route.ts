@@ -243,7 +243,7 @@ export async function POST(request: NextRequest) {
         campanha: c.campaign_name,
         compras: c.compras,
         ctr: formatPercent(c.ctr),
-        frequencia: c.frequency.toFixed(1),
+        frequencia: c.frequency != null ? c.frequency.toFixed(1) : '-',
         motivo: c.status_reason,
       })),
       gasto_sem_retorno: formatCurrency(

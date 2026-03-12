@@ -20,16 +20,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { ad_account_id, access_token, conversion_event } = await request.json();
+  const { ad_account_id, access_token, conversion_event, credential_type } = await request.json();
 
   if (!ad_account_id || !access_token) {
     return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
   }
 
-  const { dateStart, dateEnd } = resolveDateRange('30');
+  const { dateStart, dateEnd } = resolveDateRange(365);
 
   try {
-    await runFullSync(ad_account_id, access_token, conversion_event, dateStart, dateEnd);
+    await runFullSync(ad_account_id, access_token, conversion_event, dateStart, dateEnd, credential_type || 'user');
     await checkAlerts(ad_account_id);
 
     // Sync GA4 (D-1)

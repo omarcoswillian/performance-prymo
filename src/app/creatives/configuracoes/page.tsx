@@ -2,7 +2,7 @@
 
 import { DEFAULT_SETTINGS } from '@/lib/decision-engine';
 import { formatCurrency } from '@/lib/format';
-import { Settings, Globe, Check, Loader2, ChevronDown, RefreshCw, Share2 } from 'lucide-react';
+import { Settings, Globe, Check, Loader2, ChevronDown, RefreshCw, Share2, Shield, ShieldCheck, ShieldAlert, ShieldX, Key } from 'lucide-react';
 import { useAccount } from '@/components/creatives/account-context';
 import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
@@ -13,12 +13,22 @@ interface MetaAccount {
   name: string;
   status: string;
   token_expires_at: string | null;
+  credential_type?: string;
+  credential_health?: string;
+  credential_checked_at?: string | null;
 }
 
 interface GA4Property {
   propertyId: string;
   displayName: string;
 }
+
+const HEALTH_CONFIG: Record<string, { label: string; color: string; bg: string; Icon: typeof Shield }> = {
+  healthy: { label: 'Saudavel', color: 'text-emerald-700', bg: 'bg-emerald-100', Icon: ShieldCheck },
+  degraded: { label: 'Degradado', color: 'text-amber-700', bg: 'bg-amber-100', Icon: ShieldAlert },
+  expired: { label: 'Expirado', color: 'text-red-700', bg: 'bg-red-100', Icon: ShieldX },
+  unknown: { label: 'Desconhecido', color: 'text-gray-600', bg: 'bg-gray-100', Icon: Shield },
+};
 
 const settingsDisplay = [
   { label: 'CPA Alvo (Vendas)', value: formatCurrency(DEFAULT_SETTINGS.cpa_target) },
@@ -39,6 +49,12 @@ export default function ConfiguracoesPage() {
   const [ga4Saving, setGa4Saving] = useState(false);
   const [ga4Properties, setGa4Properties] = useState<GA4Property[]>([]);
   const [propertiesLoading, setPropertiesLoading] = useState(false);
+
+  // System User Token state
+  const [systemToken, setSystemToken] = useState('');
+  const [systemTokenSaving, setSystemTokenSaving] = useState(false);
+  const [systemTokenMessage, setSystemTokenMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [healthChecking, setHealthChecking] = useState(false);
 
   // Load available GA4 properties from server (auto-detect)
   useEffect(() => {
@@ -125,6 +141,21 @@ export default function ConfiguracoesPage() {
   const [metaMessage, setMetaMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const searchParams = useSearchParams();
 
+  const loadMetaAccounts = useCallback(async () => {
+    setMetaLoading(true);
+    try {
+      const res = await fetch('/api/meta/accounts');
+      if (res.ok) {
+        const data = await res.json();
+        setMetaAccounts(data.accounts || []);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setMetaLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     // Read OAuth redirect result from query params
     const success = searchParams.get('meta_success');
@@ -132,37 +163,84 @@ export default function ConfiguracoesPage() {
     if (success) setMetaMessage({ type: 'success', text: success });
     else if (error) setMetaMessage({ type: 'error', text: error });
 
-    async function loadMetaAccounts() {
-      setMetaLoading(true);
-      try {
-        const res = await fetch('/api/meta/accounts');
-        if (res.ok) {
-          const data = await res.json();
-          setMetaAccounts(data.accounts || []);
-        }
-      } catch {
-        // ignore
-      } finally {
-        setMetaLoading(false);
-      }
-    }
     loadMetaAccounts();
-  }, [searchParams]);
+  }, [searchParams, loadMetaAccounts]);
 
   const handleReconnectMeta = () => {
-    // Use server-side OAuth redirect flow instead of FB.login SDK.
-    // FB.login requires HTTPS on the calling page — redirect flow works everywhere.
     setMetaReconnecting(true);
     setMetaMessage(null);
     window.location.href = '/api/meta/oauth/start';
   };
 
-  const isTokenExpired = (expiresAt: string | null) => {
-    if (!expiresAt) return true;
-    return new Date(expiresAt) < new Date();
+  const handleSaveSystemToken = async () => {
+    if (!selectedAccount || !systemToken.trim()) return;
+    setSystemTokenSaving(true);
+    setSystemTokenMessage(null);
+    try {
+      const res = await fetch('/api/meta/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ad_account_id: selectedAccount,
+          system_user_token: systemToken.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSystemTokenMessage({ type: 'success', text: data.message });
+        setSystemToken('');
+        loadMetaAccounts();
+      } else {
+        setSystemTokenMessage({ type: 'error', text: data.error || 'Erro ao salvar token' });
+      }
+    } catch {
+      setSystemTokenMessage({ type: 'error', text: 'Erro de conexao' });
+    } finally {
+      setSystemTokenSaving(false);
+    }
+  };
+
+  const handleHealthCheck = async () => {
+    if (!selectedAccount) return;
+    setHealthChecking(true);
+    try {
+      const res = await fetch(`/api/meta/credentials/health?ad_account_id=${selectedAccount}`);
+      if (res.ok) {
+        loadMetaAccounts();
+      }
+    } catch {
+      // ignore
+    } finally {
+      setHealthChecking(false);
+    }
+  };
+
+  const getAccountStatus = (acc: MetaAccount) => {
+    const health = acc.credential_health || 'unknown';
+    const config = HEALTH_CONFIG[health] || HEALTH_CONFIG.unknown;
+    const isSystemUser = acc.credential_type === 'system_user';
+
+    if (isSystemUser) {
+      return {
+        ...config,
+        label: health === 'healthy' ? 'System User' : config.label,
+      };
+    }
+
+    // For user tokens, check expiration
+    if (health === 'unknown') {
+      const expired = !acc.token_expires_at || new Date(acc.token_expires_at) < new Date();
+      if (expired) return HEALTH_CONFIG.expired;
+      return { ...HEALTH_CONFIG.healthy, label: 'Conectado' };
+    }
+
+    return config;
   };
 
   const selectedPropertyName = ga4Properties.find(p => p.propertyId === ga4PropertyId.split('|')[0])?.displayName;
+
+  // Find the currently selected account data
+  const selectedAccountData = metaAccounts.find(a => a.ad_account_id === selectedAccount);
 
   return (
     <div className="flex flex-1 flex-col px-6 py-4">
@@ -185,19 +263,41 @@ export default function ConfiguracoesPage() {
         ) : (
           <div className="space-y-2">
             {metaAccounts.map((acc) => {
-              const expired = isTokenExpired(acc.token_expires_at);
+              const status = getAccountStatus(acc);
+              const StatusIcon = status.Icon;
               return (
                 <div key={acc.id} className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">{acc.name}</span>
-                  <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${expired ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                    {expired ? 'Token Expirado' : 'Conectado'}
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground">{acc.name}</span>
+                    {acc.credential_type === 'system_user' && (
+                      <span className="inline-flex items-center gap-1 text-xs text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">
+                        <Key className="h-3 w-3" />
+                        System User
+                      </span>
+                    )}
+                  </div>
+                  <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${status.bg} ${status.color}`}>
+                    <StatusIcon className="h-3 w-3" />
+                    {status.label}
                   </span>
                 </div>
               );
             })}
-            {metaAccounts[0]?.token_expires_at && !isTokenExpired(metaAccounts[0].token_expires_at) && (
+            {selectedAccountData?.credential_type !== 'system_user' &&
+              selectedAccountData?.token_expires_at &&
+              new Date(selectedAccountData.token_expires_at) > new Date() && (
               <p className="text-xs text-muted-foreground">
-                Expira em {new Date(metaAccounts[0].token_expires_at).toLocaleDateString('pt-BR')}
+                Expira em {new Date(selectedAccountData.token_expires_at).toLocaleDateString('pt-BR')}
+              </p>
+            )}
+            {selectedAccountData?.credential_type === 'system_user' && (
+              <p className="text-xs text-emerald-600">
+                Token permanente — nao expira
+              </p>
+            )}
+            {selectedAccountData?.credential_checked_at && (
+              <p className="text-xs text-muted-foreground">
+                Verificado em {new Date(selectedAccountData.credential_checked_at).toLocaleString('pt-BR')}
               </p>
             )}
           </div>
@@ -209,18 +309,89 @@ export default function ConfiguracoesPage() {
           </p>
         )}
 
-        <button
-          onClick={handleReconnectMeta}
-          disabled={metaReconnecting}
-          className="mt-4 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-        >
-          {metaReconnecting ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <RefreshCw className="h-4 w-4" />
+        <div className="flex items-center gap-2 mt-4">
+          <button
+            onClick={handleReconnectMeta}
+            disabled={metaReconnecting}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {metaReconnecting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            {metaReconnecting ? 'Reconectando...' : 'Reconectar Meta'}
+          </button>
+
+          <button
+            onClick={handleHealthCheck}
+            disabled={healthChecking || !selectedAccount}
+            className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+          >
+            {healthChecking ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <ShieldCheck className="h-4 w-4" />
+            )}
+            {healthChecking ? 'Verificando...' : 'Verificar Saude'}
+          </button>
+        </div>
+      </div>
+
+      {/* System User Token */}
+      <div className="rounded-lg border bg-card p-4 max-w-lg mb-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Key className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-medium">System User Token</span>
+        </div>
+
+        <p className="text-xs text-muted-foreground mb-3">
+          Tokens de System User nao expiram e sao ideais para automacao.
+          Gere em Business Manager &gt; Configuracoes &gt; Usuarios do sistema.
+        </p>
+
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-muted-foreground block mb-1">
+              Token de Acesso do System User
+            </label>
+            <input
+              type="password"
+              value={systemToken}
+              onChange={(e) => {
+                setSystemToken(e.target.value);
+                setSystemTokenMessage(null);
+              }}
+              placeholder="Cole o token aqui..."
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+            />
+          </div>
+
+          {systemTokenMessage && (
+            <p className={`text-xs ${systemTokenMessage.type === 'success' ? 'text-emerald-600' : 'text-red-600'}`}>
+              {systemTokenMessage.text}
+            </p>
           )}
-          {metaReconnecting ? 'Reconectando...' : 'Reconectar Meta'}
-        </button>
+
+          <button
+            onClick={handleSaveSystemToken}
+            disabled={systemTokenSaving || !systemToken.trim() || !selectedAccount}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {systemTokenSaving ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <ShieldCheck className="h-4 w-4" />
+            )}
+            {systemTokenSaving ? 'Validando e salvando...' : 'Validar e Salvar'}
+          </button>
+        </div>
+
+        <div className="mt-4 pt-4 border-t text-xs text-muted-foreground space-y-1">
+          <p>O token sera validado com a Meta API antes de ser salvo.</p>
+          <p>Permissoes necessarias: <strong>ads_read</strong>, <strong>ads_management</strong>, <strong>business_management</strong>.</p>
+          <p>Aplica-se a conta selecionada: <strong>{selectedAccount || 'nenhuma'}</strong></p>
+        </div>
       </div>
 
       {/* GA4 Config */}

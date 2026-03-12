@@ -4,7 +4,14 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { verifyAccountOwnership } from '@/lib/verify-account';
 import { decrypt } from '@/lib/crypto';
 import { metaApiFetch } from '@/lib/meta/client';
-import type { CampaignType } from '@/lib/decision-engine';
+import {
+  applyDecisions,
+  calculateAccountBenchmarkCTR,
+  DEFAULT_SETTINGS,
+  type CampaignType,
+  type DecisionSettings,
+  type CreativeMetrics,
+} from '@/lib/decision-engine';
 
 /**
  * Maps Meta Ads campaign objective to our CampaignType.
@@ -59,8 +66,8 @@ export async function GET(request: NextRequest) {
 
     switch (type) {
       case 'command': {
-        // Use SQL RPCs to aggregate in the database, avoiding PostgREST 1000-row limit.
-        const [byAdResult, dailyResult] = await Promise.all([
+        // Fetch ads data, daily totals, account settings, and overrides in parallel
+        const [byAdResult, dailyResult, settingsResult, overridesResult] = await Promise.all([
           supabase.rpc('get_insights_by_ad', {
             p_ad_account_id: adAccountId,
             p_date_start: dateStart,
@@ -71,11 +78,39 @@ export async function GET(request: NextRequest) {
             p_date_start: dateStart,
             p_date_end: dateEnd,
           }),
+          supabase
+            .from('meta_settings')
+            .select('cpa_target, min_spend_threshold, frequency_warn, frequency_kill, cpa_kill_multiplier')
+            .eq('ad_account_id', adAccountId)
+            .maybeSingle(),
+          supabase
+            .from('meta_ad_status_overrides')
+            .select('ad_id, forced_status, note')
+            .eq('ad_account_id', adAccountId),
         ]);
 
         if (byAdResult.error) {
           console.error('[Insights command] RPC error:', byAdResult.error.message);
           return NextResponse.json({ error: byAdResult.error.message }, { status: 500 });
+        }
+
+        // Build effective settings: DB values override defaults
+        const dbSettings = settingsResult.data;
+        const effectiveSettings: DecisionSettings = {
+          ...DEFAULT_SETTINGS,
+          ...(dbSettings && {
+            cpa_target: Number(dbSettings.cpa_target),
+            min_spend: Number(dbSettings.min_spend_threshold),
+            frequency_warn: Number(dbSettings.frequency_warn),
+            frequency_kill: Number(dbSettings.frequency_kill),
+            cost_kill_multiplier: Number(dbSettings.cpa_kill_multiplier),
+          }),
+        };
+
+        // Build overrides map: { ad_id → forced_status }
+        const overridesMap: Record<string, string> = {};
+        for (const o of overridesResult.data || []) {
+          overridesMap[o.ad_id] = o.forced_status;
         }
 
         const adsData: Array<{
@@ -100,7 +135,7 @@ export async function GET(request: NextRequest) {
           (campaigns || []).map(c => [c.campaign_id, { name: c.name, objective: c.objective }])
         );
 
-        const creatives = adsData.map(ad => {
+        const rawCreatives: CreativeMetrics[] = adsData.map(ad => {
           const imp = Number(ad.impressions);
           const clk = Number(ad.clicks);
           const spd = Number(ad.spend);
@@ -128,9 +163,13 @@ export async function GET(request: NextRequest) {
           };
         });
 
+        // Apply decision engine server-side with real settings and overrides
+        const ctr_benchmark = calculateAccountBenchmarkCTR(rawCreatives);
+        const creatives = applyDecisions(rawCreatives, effectiveSettings, overridesMap);
+
         // Background: repair missing frequency — fire and forget, shows on next reload
-        const hasAnyFrequency = creatives.some(c => c.frequency != null && c.frequency > 0);
-        if (!hasAnyFrequency && creatives.length > 0) {
+        const hasAnyFrequency = rawCreatives.some(c => c.frequency != null && (c.frequency as number) > 0);
+        if (!hasAnyFrequency && rawCreatives.length > 0) {
           fetchLiveFrequencyBulk(adAccountId, dateStart, dateEnd).catch(err =>
             console.warn('[Insights] Bulk frequency fetch failed:', err instanceof Error ? err.message : err)
           );
@@ -139,7 +178,6 @@ export async function GET(request: NextRequest) {
         // Background: repair missing thumbnails by fetching from Meta API
         const missingThumbAds = adsData.filter(a => !a.thumbnail_url);
         if (missingThumbAds.length > 0) {
-          // Fire and forget — don't block the response
           repairMissingThumbnails(adAccountId, missingThumbAds.map(a => a.ad_id)).catch(err =>
             console.error('[Insights] Thumbnail repair failed:', err instanceof Error ? err.message : err)
           );
@@ -158,7 +196,12 @@ export async function GET(request: NextRequest) {
           ctr: Number(d.ctr || 0),
         }));
 
-        const response: Record<string, unknown> = { creatives, daily_totals };
+        const response: Record<string, unknown> = {
+          creatives,
+          daily_totals,
+          settings: effectiveSettings,
+          ctr_benchmark,
+        };
         if (debug) {
           response._debug = {
             ad_account_id: adAccountId,
@@ -168,6 +211,8 @@ export async function GET(request: NextRequest) {
             total_conversions_raw: adsData.reduce((s, a) => s + Number(a.conversions), 0),
             total_spend_raw: adsData.reduce((s, a) => s + Number(a.spend), 0),
             days_with_data: daily_totals.length,
+            settings_source: dbSettings ? 'database' : 'defaults',
+            overrides_count: Object.keys(overridesMap).length,
           };
         }
         return NextResponse.json(response);
@@ -179,27 +224,47 @@ export async function GET(request: NextRequest) {
           return NextResponse.json({ error: 'ad_id required' }, { status: 400 });
         }
 
-        // Get ad details
-        const { data: ad } = await supabase
-          .from('meta_ads')
-          .select('*')
-          .eq('ad_account_id', adAccountId)
-          .eq('ad_id', adId)
-          .single();
+        // Fetch ad details, daily data, and settings in parallel
+        const [adResult, dailyDataResult, diagSettingsResult] = await Promise.all([
+          supabase
+            .from('meta_ads')
+            .select('*')
+            .eq('ad_account_id', adAccountId)
+            .eq('ad_id', adId)
+            .single(),
+          supabase
+            .from('meta_ad_insights_daily')
+            .select('*')
+            .eq('ad_account_id', adAccountId)
+            .eq('ad_id', adId)
+            .gte('date', dateStart)
+            .lte('date', dateEnd)
+            .order('date', { ascending: true })
+            .limit(10000),
+          supabase
+            .from('meta_settings')
+            .select('cpa_target, min_spend_threshold, frequency_warn, frequency_kill, cpa_kill_multiplier')
+            .eq('ad_account_id', adAccountId)
+            .maybeSingle(),
+        ]);
 
-        // Get daily data for this ad
-        const { data: daily } = await supabase
-          .from('meta_ad_insights_daily')
-          .select('*')
-          .eq('ad_account_id', adAccountId)
-          .eq('ad_id', adId)
-          .gte('date', dateStart)
-          .lte('date', dateEnd)
-          .order('date', { ascending: true })
-          .limit(10000);
+        const ad = adResult.data;
+        const enrichedDaily = dailyDataResult.data || [];
 
-        // Background: repair missing frequency — fire and forget, shows on next reload
-        const enrichedDaily = daily || [];
+        // Build effective settings
+        const diagDbSettings = diagSettingsResult.data;
+        const diagEffectiveSettings: DecisionSettings = {
+          ...DEFAULT_SETTINGS,
+          ...(diagDbSettings && {
+            cpa_target: Number(diagDbSettings.cpa_target),
+            min_spend: Number(diagDbSettings.min_spend_threshold),
+            frequency_warn: Number(diagDbSettings.frequency_warn),
+            frequency_kill: Number(diagDbSettings.frequency_kill),
+            cost_kill_multiplier: Number(diagDbSettings.cpa_kill_multiplier),
+          }),
+        };
+
+        // Background: repair missing frequency
         const hasFrequency = enrichedDaily.some((d: Record<string, unknown>) => d.frequency != null && Number(d.frequency) > 0);
         if (!hasFrequency && enrichedDaily.length > 0) {
           fetchLiveFrequency(adAccountId, adId, dateStart, dateEnd).catch(err =>
@@ -212,27 +277,29 @@ export async function GET(request: NextRequest) {
         let adsetName = '';
         let campaignType: CampaignType = 'VENDAS';
         if (ad) {
-          const { data: camp } = await supabase
-            .from('meta_campaigns')
-            .select('name, objective')
-            .eq('ad_account_id', adAccountId)
-            .eq('campaign_id', ad.campaign_id)
-            .single();
-          campaignName = camp?.name || '';
-          campaignType = mapObjectiveToCampaignType(camp?.objective ?? null);
-
-          const { data: adset } = await supabase
-            .from('meta_adsets')
-            .select('name')
-            .eq('ad_account_id', adAccountId)
-            .eq('adset_id', ad.adset_id)
-            .single();
-          adsetName = adset?.name || '';
+          const [campResult, adsetResult] = await Promise.all([
+            supabase
+              .from('meta_campaigns')
+              .select('name, objective')
+              .eq('ad_account_id', adAccountId)
+              .eq('campaign_id', ad.campaign_id)
+              .single(),
+            supabase
+              .from('meta_adsets')
+              .select('name')
+              .eq('ad_account_id', adAccountId)
+              .eq('adset_id', ad.adset_id)
+              .single(),
+          ]);
+          campaignName = campResult.data?.name || '';
+          campaignType = mapObjectiveToCampaignType(campResult.data?.objective ?? null);
+          adsetName = adsetResult.data?.name || '';
         }
 
         return NextResponse.json({
           ad: ad ? { ...ad, campaign_name: campaignName, adset_name: adsetName, campaign_type: campaignType } : null,
           daily: enrichedDaily,
+          settings: diagEffectiveSettings,
         });
       }
 
@@ -329,15 +396,26 @@ async function fetchLiveFrequency(
 
   // Persist to DB so we don't have to fetch again
   if (updateRows.length > 0) {
-    for (const { date, frequency } of updateRows) {
-      await admin
-        .from('meta_ad_insights_daily')
-        .update({ frequency, updated_at: new Date().toISOString() })
-        .eq('ad_account_id', adAccountId)
-        .eq('ad_id', adId)
-        .eq('date', date);
+    const first = updateRows[0];
+    const { error: testErr } = await admin
+      .from('meta_ad_insights_daily')
+      .update({ frequency: first.frequency, updated_at: new Date().toISOString() })
+      .eq('ad_account_id', adAccountId)
+      .eq('ad_id', adId)
+      .eq('date', first.date);
+    if (testErr && testErr.message.includes('frequency')) {
+      console.warn('[Insights] frequency column not found, skipping persist');
+    } else {
+      for (const { date, frequency } of updateRows.slice(1)) {
+        await admin
+          .from('meta_ad_insights_daily')
+          .update({ frequency, updated_at: new Date().toISOString() })
+          .eq('ad_account_id', adAccountId)
+          .eq('ad_id', adId)
+          .eq('date', date);
+      }
+      console.log(`[Insights] Live-fetched and persisted frequency for ad ${adId}: ${updateRows.length} days`);
     }
-    console.log(`[Insights] Live-fetched and persisted frequency for ad ${adId}: ${updateRows.length} days`);
   }
 
   return map;
@@ -406,20 +484,31 @@ async function fetchLiveFrequencyBulk(
     }
   }
 
-  // Persist to DB
+  // Persist to DB (skip if frequency column doesn't exist)
   if (updateRows.length > 0) {
-    for (let i = 0; i < updateRows.length; i += 100) {
-      const batch = updateRows.slice(i, i + 100);
-      for (const { ad_id, date, frequency } of batch) {
-        await admin
-          .from('meta_ad_insights_daily')
-          .update({ frequency, updated_at: new Date().toISOString() })
-          .eq('ad_account_id', adAccountId)
-          .eq('ad_id', ad_id)
-          .eq('date', date);
+    const first = updateRows[0];
+    const { error: testErr } = await admin
+      .from('meta_ad_insights_daily')
+      .update({ frequency: first.frequency, updated_at: new Date().toISOString() })
+      .eq('ad_account_id', adAccountId)
+      .eq('ad_id', first.ad_id)
+      .eq('date', first.date);
+    if (testErr && testErr.message.includes('frequency')) {
+      console.warn('[Insights] frequency column not found, skipping bulk persist');
+    } else {
+      for (let i = 1; i < updateRows.length; i += 100) {
+        const batch = updateRows.slice(i, i + 100);
+        for (const { ad_id, date, frequency } of batch) {
+          await admin
+            .from('meta_ad_insights_daily')
+            .update({ frequency, updated_at: new Date().toISOString() })
+            .eq('ad_account_id', adAccountId)
+            .eq('ad_id', ad_id)
+            .eq('date', date);
+        }
       }
+      console.log(`[Insights] Bulk live-fetched frequency for ${adAccountId}: ${updateRows.length} rows, ${freqByAd.size} ads`);
     }
-    console.log(`[Insights] Bulk live-fetched frequency for ${adAccountId}: ${updateRows.length} rows, ${freqByAd.size} ads`);
   }
 
   // Return ad_id → average frequency

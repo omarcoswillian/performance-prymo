@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
 
   const { data: accounts, error } = await supabase
     .from('meta_accounts')
-    .select('ad_account_id, access_token, conversion_event')
+    .select('ad_account_id, access_token, conversion_event, credential_type')
     .eq('status', 'active');
 
   if (error) {
@@ -47,6 +47,7 @@ export async function GET(request: NextRequest) {
         ad_account_id: account.ad_account_id,
         access_token: account.access_token,
         conversion_event: account.conversion_event,
+        credential_type: account.credential_type || 'user',
       }),
     }).catch((err) => {
       console.error(`[Cron] Failed to dispatch ${account.ad_account_id}:`, err);

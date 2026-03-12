@@ -52,18 +52,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Always sync at least 30 days to ensure cumulative consistency (30d >= 14d >= 7d).
+    // Sync 365 days to ensure data exists for all date range presets.
     // Uses Brazil timezone to avoid off-by-one from UTC.
-    const range30 = resolveDateRange('30');
-    const dateStart = range30.dateStart;
-    const dateEnd = range30.dateEnd;
+    const range = resolveDateRange(365);
+    const dateStart = range.dateStart;
+    const dateEnd = range.dateEnd;
 
     const result = await runFullSync(
       ad_account_id,
       account.access_token,
       account.conversion_event,
       dateStart,
-      dateEnd
+      dateEnd,
+      account.credential_type || 'user'
     );
 
     // Check alerts after sync

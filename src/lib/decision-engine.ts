@@ -43,7 +43,7 @@ export interface CreativeMetrics {
   ctr: number;
   compras: number;       // conversions (vendas or leads depending on type)
   cpa: number | null;    // cost per conversion (CPA for vendas, CPL for captura)
-  frequency: number;
+  frequency: number | null;
   spend: number;
   impressions: number;
   clicks: number;
@@ -112,8 +112,9 @@ export function calculateStatus(
 
   const costBad = cpa !== null && cpa > target * cost_kill_multiplier;
   const costGood = cpa !== null && cpa <= target;
-  const freqHigh = frequency >= frequency_kill;
-  const freqWarn = frequency >= frequency_warn;
+  const freq = frequency ?? 0;
+  const freqHigh = freq >= frequency_kill;
+  const freqWarn = freq >= frequency_warn;
   const ctrLow = ctr < ctr_benchmark;
   const hasConversions = compras >= 1;
   const spentEnough = spend >= min_spend;
@@ -138,7 +139,7 @@ export function calculateStatus(
   if (freqHigh) {
     return {
       status: 'VARIAR',
-      reason: `Frequencia alta (${frequency.toFixed(1)}) - fadiga do criativo`,
+      reason: `Frequencia alta (${freq.toFixed(1)}) - fadiga do criativo`,
     };
   }
 
@@ -162,7 +163,7 @@ export function calculateStatus(
   if (hasConversions && freqWarn && !freqHigh) {
     return {
       status: 'VARIAR',
-      reason: `Frequencia em alerta (${frequency.toFixed(1)}) - considerar variacao`,
+      reason: `Frequencia em alerta (${freq.toFixed(1)}) - considerar variacao`,
     };
   }
 
@@ -248,7 +249,7 @@ export function generateDiagnosticText(
     parts.push(`CPM elevado (R$${creative.cpm.toFixed(2)})`);
   }
 
-  if (creative.frequency >= settings.frequency_warn) {
+  if (creative.frequency != null && creative.frequency >= settings.frequency_warn) {
     parts.push(`frequencia alta (${creative.frequency.toFixed(1)})`);
   }
 

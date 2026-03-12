@@ -81,27 +81,41 @@ export async function GET(request: NextRequest) {
     const supabase = createAdminClient();
     const { data: existingAccounts } = await supabase
       .from('meta_accounts')
-      .select('ad_account_id')
+      .select('ad_account_id, credential_type')
       .eq('user_id', userId);
 
     let renewed = 0;
     if (existingAccounts && existingAccounts.length > 0) {
+      // Only update accounts that use user tokens — don't overwrite system_user credentials
       const { error: updateError } = await supabase
         .from('meta_accounts')
         .update({
           access_token: encryptedToken,
           token_expires_at: tokenExpiresAt,
+          credential_type: 'user',
+          credential_health: 'healthy',
+          credential_checked_at: new Date().toISOString(),
           status: 'active',
           updated_at: new Date().toISOString(),
         })
-        .eq('user_id', userId);
+        .eq('user_id', userId)
+        .neq('credential_type', 'system_user');
 
       if (updateError) {
         console.error('[OAuth callback] Update error:', updateError);
         const msg = encodeURIComponent('Erro ao salvar token.');
         return NextResponse.redirect(`${settingsUrl}?meta_error=${msg}`);
       }
-      renewed = existingAccounts.length;
+
+      // Count how many were actually updated (excluding system_user accounts)
+      const systemUserCount = existingAccounts.filter(
+        (a: { credential_type?: string }) => a.credential_type === 'system_user'
+      ).length;
+      renewed = existingAccounts.length - systemUserCount;
+
+      if (systemUserCount > 0) {
+        console.log(`[OAuth callback] Skipped ${systemUserCount} system_user account(s) — token not overwritten`);
+      }
     }
 
     const expiryDate = new Date(tokenExpiresAt).toLocaleDateString('pt-BR');

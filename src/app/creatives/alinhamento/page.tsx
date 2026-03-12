@@ -1,8 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
 import { StatusBadge } from '@/components/creatives/status-badge';
-import { useAccount } from '@/components/creatives/account-context';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import {
@@ -18,11 +16,8 @@ import {
 import Image from 'next/image';
 import Link from 'next/link';
 import { formatCurrency, formatPercent, formatNumber } from '@/lib/format';
-import {
-  applyDecisions,
-  DEFAULT_SETTINGS,
-  type CreativeWithDecision,
-} from '@/lib/decision-engine';
+import { useCommandData } from '@/lib/hooks/use-command-data';
+import type { CreativeWithDecision } from '@/lib/decision-engine';
 
 type AlignmentStatus = 'ALINHADO' | 'DESALINHADO' | 'CRITICO';
 
@@ -160,49 +155,7 @@ function toRankingItem(c: CreativeWithDecision, metrics: string[]): RankingItem 
 // --------------- Page ---------------
 
 export default function AlinhamentoPage() {
-  const { selectedAccount, dateStart, dateEnd } = useAccount();
-  const [creatives, setCreatives] = useState<CreativeWithDecision[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-
-  const fetchData = useCallback(async () => {
-    if (!selectedAccount || !dateStart || !dateEnd) return;
-    setLoading(true);
-    try {
-      const res = await fetch(
-        `/api/meta/insights?ad_account_id=${selectedAccount}&date_start=${dateStart}&date_end=${dateEnd}&type=command`
-      );
-      if (res.ok) {
-        const data = await res.json();
-        const withDecisions = applyDecisions(data.creatives || [], DEFAULT_SETTINGS, {});
-        setCreatives(withDecisions);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedAccount, dateStart, dateEnd]);
-
-  const handleSync = useCallback(async () => {
-    if (!selectedAccount || syncing) return;
-    setSyncing(true);
-    try {
-      await fetch('/api/meta/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ad_account_id: selectedAccount }),
-      });
-      await fetchData();
-    } finally {
-      setSyncing(false);
-    }
-  }, [selectedAccount, syncing, fetchData]);
-
-  useEffect(() => {
-    setCreatives([]);
-    fetchData();
-  }, [fetchData]);
+  const { creatives, settings, loading, syncing, triggerSync } = useCommandData();
 
   const countByAlignment = (s: AlignmentStatus) => creatives.filter(c => getAlignmentStatus(c) === s).length;
 
@@ -219,7 +172,7 @@ export default function AlinhamentoPage() {
               <span className="rounded bg-amber-500/15 px-2 py-0.5 text-amber-700">{countByAlignment('DESALINHADO')} desalinhado</span>
               <span className="rounded bg-red-500/15 px-2 py-0.5 text-red-700">{countByAlignment('CRITICO')} critico</span>
             </div>
-            <Button onClick={handleSync} disabled={syncing} variant="outline" size="sm" className="h-8">
+            <Button onClick={triggerSync} disabled={syncing} variant="outline" size="sm" className="h-8">
               {syncing ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 h-3 w-3" />}
               Sync
             </Button>
@@ -250,7 +203,7 @@ export default function AlinhamentoPage() {
               const convLabel = campType === 'CAPTURA' ? 'leads' : 'vendas';
               const costLabel = campType === 'CAPTURA' ? 'CPL' : 'CPA';
 
-              // 1. Melhores nesta campanha: cost asc, compras desc, top 3
+              // 1. Melhores nesta campanha
               const best = group.creatives
                 .filter((c) => c.compras > 0)
                 .sort((a, b) => {
@@ -261,7 +214,7 @@ export default function AlinhamentoPage() {
                 })
                 .slice(0, 3);
 
-              // 2. Maior taxa de conversao: clicks >= 10, compras > 0, conv rate desc
+              // 2. Maior taxa de conversao
               const bestConv = group.creatives
                 .filter((c) => c.clicks >= 10 && c.compras > 0)
                 .sort((a, b) => {
@@ -271,13 +224,13 @@ export default function AlinhamentoPage() {
                 })
                 .slice(0, 3);
 
-              // 3. Clicam mas nao convertem: clicks > 0, 0 compras, min spend
+              // 3. Clicam mas nao convertem
               const clickNoConv = group.creatives
                 .filter(
                   (c) =>
                     c.clicks > 0 &&
                     c.compras === 0 &&
-                    c.spend >= DEFAULT_SETTINGS.min_spend
+                    c.spend >= settings.min_spend
                 )
                 .sort((a, b) => b.clicks - a.clicks)
                 .slice(0, 3);

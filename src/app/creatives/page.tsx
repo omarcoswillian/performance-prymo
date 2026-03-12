@@ -45,22 +45,8 @@ import {
 } from 'recharts';
 import { format as fmtDate, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import {
-  applyDecisions,
-  DEFAULT_SETTINGS,
-  type CreativeWithDecision,
-  type CreativeMetrics,
-} from '@/lib/decision-engine';
-
-interface DailyTotal {
-  date: string;
-  impressions: number;
-  clicks: number;
-  spend: number;
-  conversions: number;
-  cpa: number | null;
-  ctr: number;
-}
+import { useCommandData } from '@/lib/hooks/use-command-data';
+import type { CreativeWithDecision } from '@/lib/decision-engine';
 
 interface PeriodTotals {
   impressions: number;
@@ -72,7 +58,7 @@ interface PeriodTotals {
   taxaConversao: number;
 }
 
-function computeTotals(creatives: CreativeMetrics[]): PeriodTotals {
+function computeTotals(creatives: Pick<CreativeWithDecision, 'impressions' | 'clicks' | 'compras' | 'spend'>[]): PeriodTotals {
   const impressions = creatives.reduce((s, c) => s + c.impressions, 0);
   const clicks = creatives.reduce((s, c) => s + c.clicks, 0);
   const compras = creatives.reduce((s, c) => s + c.compras, 0);
@@ -104,101 +90,43 @@ function computeTrend(current: number | null, previous: number | null, invertBet
   return isUp ? 'up' : 'down';
 }
 
-/** Labels and icons adapted per campaign type */
-function getTypeLabels(c: CreativeWithDecision) {
-  if (c.campaign_type === 'CAPTURA') {
-    return { convLabel: 'leads', costLabel: 'CPL', costTarget: DEFAULT_SETTINGS.cpl_target };
-  }
-  return { convLabel: 'vendas', costLabel: 'CPA', costTarget: DEFAULT_SETTINGS.cpa_target };
-}
-
 export default function CommandPage() {
   const router = useRouter();
-  const { selectedAccount, dateStart, dateEnd, prevDateStart, prevDateEnd } = useAccount();
-  const [creatives, setCreatives] = useState<CreativeWithDecision[]>([]);
-  const [dailyTotals, setDailyTotals] = useState<DailyTotal[]>([]);
-  const [ctrBenchmark, setCtrBenchmark] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-  const [overrides] = useState<Record<string, string>>({});
+  const { selectedAccount, dateEnd, prevDateStart, prevDateEnd } = useAccount();
+  const { creatives, dailyTotals, settings, ctrBenchmark, loading, syncing, error, triggerSync } = useCommandData();
 
-  const currentTotals = computeTotals(creatives);
+  // Previous period — specific to this page for trend comparison
   const [prevTotals, setPrevTotals] = useState<PeriodTotals | null>(null);
 
-  const fetchData = useCallback(async () => {
-    if (!selectedAccount || !dateStart || !dateEnd) return;
-    setLoading(true);
+  const fetchPrevPeriod = useCallback(async () => {
+    if (!selectedAccount || !prevDateStart || !prevDateEnd) return;
     try {
-      const [res, prevRes] = await Promise.all([
-        fetch(
-          `/api/meta/insights?ad_account_id=${selectedAccount}&date_start=${dateStart}&date_end=${dateEnd}&type=command`
-        ),
-        fetch(
-          `/api/meta/insights?ad_account_id=${selectedAccount}&date_start=${prevDateStart}&date_end=${prevDateEnd}&type=command`
-        ),
-      ]);
-
+      const res = await fetch(
+        `/api/meta/insights?ad_account_id=${selectedAccount}&date_start=${prevDateStart}&date_end=${prevDateEnd}&type=command`
+      );
       if (res.ok) {
         const data = await res.json();
-        const raw: CreativeMetrics[] = data.creatives || [];
-        const withDecisions = applyDecisions(raw, DEFAULT_SETTINGS, overrides);
-        setCreatives(withDecisions);
-        setDailyTotals(data.daily_totals || []);
-        setCtrBenchmark(
-          raw.length > 0
-            ? (raw.reduce((s, c) => s + c.clicks, 0) / raw.reduce((s, c) => s + c.impressions, 0)) * 100
-            : 0
-        );
+        setPrevTotals(computeTotals(data.creatives || []));
       }
-
-      if (prevRes.ok) {
-        const prevData = await prevRes.json();
-        const prevRaw: CreativeMetrics[] = prevData.creatives || [];
-        setPrevTotals(computeTotals(prevRaw));
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
+    } catch {
+      // Previous period is non-critical
     }
-  }, [selectedAccount, dateStart, dateEnd, prevDateStart, prevDateEnd, overrides]);
-
-  const [syncError, setSyncError] = useState<string | null>(null);
-
-  const handleSync = useCallback(async () => {
-    if (!selectedAccount || syncing) return;
-    setSyncing(true);
-    setSyncError(null);
-    try {
-      const res = await fetch('/api/meta/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ad_account_id: selectedAccount,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        const msg = data?.error || 'Erro ao sincronizar';
-        setSyncError(
-          msg.includes('access token') || msg.includes('Session has expired')
-            ? 'Token Meta expirado. Reconecte a conta em Configurações.'
-            : msg
-        );
-      }
-      await fetchData();
-    } finally {
-      setSyncing(false);
-    }
-  }, [selectedAccount, syncing, fetchData]);
+  }, [selectedAccount, prevDateStart, prevDateEnd]);
 
   useEffect(() => {
-    setCreatives([]);
-    setDailyTotals([]);
     setPrevTotals(null);
-    fetchData();
-  }, [fetchData]);
+    fetchPrevPeriod();
+  }, [fetchPrevPeriod]);
 
+  /** Labels adapted per campaign type, using server-resolved settings */
+  function getTypeLabels(c: CreativeWithDecision) {
+    if (c.campaign_type === 'CAPTURA') {
+      return { convLabel: 'leads', costLabel: 'CPL', costTarget: settings.cpl_target };
+    }
+    return { convLabel: 'vendas', costLabel: 'CPA', costTarget: settings.cpa_target };
+  }
+
+  const currentTotals = computeTotals(creatives);
   const countByStatus = (s: string) => creatives.filter(c => c.status === s).length;
 
   // Trend directions
@@ -212,36 +140,31 @@ export default function CommandPage() {
   const vendasCount = creatives.length - capturaCount;
   const hasMixed = capturaCount > 0 && vendasCount > 0;
 
-  // Ranking: Top 10 — sorted by cost metric (CPA/CPL asc), then conversions desc
-  // CTR is NOT used in ranking
+  // Ranking: Top 10
   const topCreatives = creatives
     .filter(c => c.status !== 'MATAR')
     .filter(c => c.compras > 0)
     .sort((a, b) => {
-      // Primary: lower cost per conversion
       const costA = a.cpa ?? Infinity;
       const costB = b.cpa ?? Infinity;
       if (costA !== costB) return costA - costB;
-      // Secondary: more conversions
       return b.compras - a.compras;
     })
     .slice(0, 10);
 
-  // Worst creatives: MATAR status, OR spent >= min with 0 conversions, OR cost > 1.3x target
+  // Worst creatives
   const worstCreatives = creatives
     .filter(c => {
       if (c.status === 'MATAR') return true;
-      if (c.spend >= DEFAULT_SETTINGS.min_spend && c.compras === 0) return true;
+      if (c.spend >= settings.min_spend && c.compras === 0) return true;
       const { costTarget } = getTypeLabels(c);
-      if (c.cpa !== null && c.cpa > costTarget * DEFAULT_SETTINGS.cost_kill_multiplier) return true;
+      if (c.cpa !== null && c.cpa > costTarget * settings.cost_kill_multiplier) return true;
       return false;
     })
     .sort((a, b) => {
-      // Wasted spend first
       const wasteA = a.compras === 0 ? a.spend : 0;
       const wasteB = b.compras === 0 ? b.spend : 0;
       if (wasteB !== wasteA) return wasteB - wasteA;
-      // Then cost ratio
       const { costTarget: targetA } = getTypeLabels(a);
       const { costTarget: targetB } = getTypeLabels(b);
       const ratioA = a.cpa !== null ? a.cpa / targetA : 0;
@@ -252,14 +175,14 @@ export default function CommandPage() {
 
   const getWorstReason = (c: CreativeWithDecision): string => {
     const { convLabel, costLabel, costTarget } = getTypeLabels(c);
-    if (c.compras === 0 && c.spend >= DEFAULT_SETTINGS.min_spend) return `R$${c.spend.toFixed(2)} gasto sem ${convLabel}`;
-    if (c.cpa !== null && c.cpa > costTarget * DEFAULT_SETTINGS.cost_kill_multiplier) return `${costLabel} ${formatCurrency(c.cpa)} > alvo`;
+    if (c.compras === 0 && c.spend >= settings.min_spend) return `R$${c.spend.toFixed(2)} gasto sem ${convLabel}`;
+    if (c.cpa !== null && c.cpa > costTarget * settings.cost_kill_multiplier) return `${costLabel} ${formatCurrency(c.cpa)} > alvo`;
     return c.status_reason;
   };
 
   // Labels for metric cards
   const primaryCostLabel = capturaCount > vendasCount ? 'CPL' : 'CPA';
-  const primaryCostTarget = capturaCount > vendasCount ? DEFAULT_SETTINGS.cpl_target : DEFAULT_SETTINGS.cpa_target;
+  const primaryCostTarget = capturaCount > vendasCount ? settings.cpl_target : settings.cpa_target;
   const primaryConvLabel = capturaCount > vendasCount ? 'Leads' : 'Vendas';
   const PrimaryConvIcon = capturaCount > vendasCount ? Users : ShoppingCart;
 
@@ -274,18 +197,18 @@ export default function CommandPage() {
               <span className="rounded bg-amber-500/15 px-2 py-0.5 text-amber-700 dark:text-amber-400">{countByStatus('VARIAR')} variar</span>
               <span className="rounded bg-red-500/15 px-2 py-0.5 text-red-700 dark:text-red-400">{countByStatus('MATAR')} matar</span>
             </div>
-            <Button onClick={handleSync} disabled={syncing} variant="outline" size="sm" className="h-8">
+            <Button onClick={triggerSync} disabled={syncing} variant="outline" size="sm" className="h-8">
               {syncing ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 h-3 w-3" />}
               Sync
             </Button>
           </div>
         </div>
 
-        {/* Sync error banner */}
-        {syncError && (
+        {/* Error banner */}
+        {error && (
           <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2.5 flex items-center gap-2 text-sm text-red-700 dark:text-red-400">
             <AlertTriangle className="h-4 w-4 shrink-0" />
-            <span>{syncError}</span>
+            <span>{error}</span>
           </div>
         )}
 
@@ -468,7 +391,7 @@ export default function CommandPage() {
                   <span className="text-[10px] text-muted-foreground">
                     {firstDataDate} — {lastDataDate}
                     {dataGap > 0 && (
-                      <span className="ml-1 text-amber-600">({dataGap}d sem dados — sync necessário)</span>
+                      <span className="ml-1 text-amber-600">({dataGap}d sem dados — sync necessario)</span>
                     )}
                   </span>
                 </div>
@@ -593,7 +516,7 @@ export default function CommandPage() {
                       <TableCell className="text-right text-sm font-mono">
                         <span title={costLabel}>{formatCurrency(c.cpa)}</span>
                       </TableCell>
-                      <TableCell className={`text-right text-sm font-mono ${c.frequency != null && c.frequency >= DEFAULT_SETTINGS.frequency_kill ? 'text-red-600 font-bold' : c.frequency != null && c.frequency >= DEFAULT_SETTINGS.frequency_warn ? 'text-amber-600' : ''}`}>{c.frequency != null && c.frequency > 0 ? c.frequency.toFixed(1) : '-'}</TableCell>
+                      <TableCell className={`text-right text-sm font-mono ${c.frequency != null && c.frequency >= settings.frequency_kill ? 'text-red-600 font-bold' : c.frequency != null && c.frequency >= settings.frequency_warn ? 'text-amber-600' : ''}`}>{c.frequency != null && c.frequency > 0 ? c.frequency.toFixed(1) : '-'}</TableCell>
                       <TableCell className="text-center">
                         <StatusBadge status={c.status} />
                       </TableCell>

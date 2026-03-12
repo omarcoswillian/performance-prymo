@@ -8,6 +8,7 @@
 import { createAdminClient } from '@/lib/supabase/admin';
 import { decrypt, encrypt } from '@/lib/crypto';
 import { metaApiFetchAll, metaApiFetch, MetaApiException, refreshLongLivedToken } from './client';
+import { updateCredentialHealth, type CredentialType } from './credentials';
 
 // ============================================================
 // Types for Meta API responses
@@ -203,10 +204,17 @@ export async function syncMetaStructure(
     }
 
     // Second pass: fetch thumbnails for ads that ended up without one
+    // Limit to 20 to avoid rate limits; bail after 3 consecutive failures
     const missingThumbnails = adRows.filter((r) => !r.thumbnail_url && r.creative_id);
   if (missingThumbnails.length > 0) {
-    console.log(`[Sync] ${missingThumbnails.length} ads missing thumbnails, fetching from creative endpoint...`);
-    for (const row of missingThumbnails) {
+    const batch = missingThumbnails.slice(0, 20);
+    console.log(`[Sync] ${missingThumbnails.length} ads missing thumbnails, fetching up to ${batch.length}...`);
+    let consecutiveFailures = 0;
+    for (const row of batch) {
+      if (consecutiveFailures >= 3) {
+        console.warn(`[Sync] Stopping thumbnail fetch after 3 consecutive failures (rate limit)`);
+        break;
+      }
       try {
         const creativeData = await metaApiFetch<{ thumbnail_url?: string; image_url?: string }>(
           `${row.creative_id}`,
@@ -221,9 +229,10 @@ export async function syncMetaStructure(
             .update({ thumbnail_url: url, updated_at: new Date().toISOString() })
             .eq('ad_account_id', adAccountId)
             .eq('ad_id', row.ad_id);
-          console.log(`[Sync] Fetched thumbnail for ad ${row.ad_id} via creative ${row.creative_id}`);
         }
+        consecutiveFailures = 0;
       } catch (err) {
+        consecutiveFailures++;
         console.warn(`[Sync] Failed to fetch thumbnail for creative ${row.creative_id}:`, err instanceof Error ? err.message : err);
       }
     }
@@ -453,13 +462,30 @@ async function upsertInsights(
   });
 
   let totalSynced = 0;
+  let skipFrequency = false;
   for (let i = 0; i < rows.length; i += 100) {
-    const chunk = rows.slice(i, i + 100);
+    const chunk = skipFrequency
+      ? rows.slice(i, i + 100).map(({ frequency: _f, ...rest }) => rest)
+      : rows.slice(i, i + 100);
     const { error } = await supabase
       .from('meta_ad_insights_daily')
       .upsert(chunk, { onConflict: 'ad_account_id,ad_id,date' });
 
-    if (error) throw new Error(`Failed to upsert insights (batch ${i}): ${error.message}`);
+    if (error) {
+      // If frequency column doesn't exist, retry batch without it
+      if (!skipFrequency && error.message.includes('frequency')) {
+        console.warn('[Sync] frequency column not found, retrying without it');
+        skipFrequency = true;
+        const fallbackChunk = rows.slice(i, i + 100).map(({ frequency: _f, ...rest }) => rest);
+        const { error: retryErr } = await supabase
+          .from('meta_ad_insights_daily')
+          .upsert(fallbackChunk, { onConflict: 'ad_account_id,ad_id,date' });
+        if (retryErr) throw new Error(`Failed to upsert insights (batch ${i}): ${retryErr.message}`);
+        totalSynced += fallbackChunk.length;
+        continue;
+      }
+      throw new Error(`Failed to upsert insights (batch ${i}): ${error.message}`);
+    }
     totalSynced += chunk.length;
   }
   return totalSynced;
@@ -523,11 +549,19 @@ const REFRESH_THRESHOLD_DAYS = 7;
 /**
  * Checks if the token is close to expiring and refreshes it automatically.
  * Returns the (possibly updated) encrypted access token to use for sync.
+ * System User tokens never expire, so refresh is skipped for them.
  */
 async function maybeRefreshToken(
   adAccountId: string,
-  encryptedToken: string
+  encryptedToken: string,
+  credentialType: CredentialType = 'user'
 ): Promise<string> {
+  // System User tokens don't expire — skip refresh entirely
+  if (credentialType === 'system_user') {
+    console.log(`[Token] System user token for ${adAccountId} — no refresh needed`);
+    return encryptedToken;
+  }
+
   const supabase = createAdminClient();
 
   // Get current token_expires_at
@@ -596,15 +630,16 @@ export async function runFullSync(
   accessToken: string,
   conversionEvent: string,
   dateStart: string,
-  dateEnd: string
+  dateEnd: string,
+  credentialType: CredentialType = 'user'
 ): Promise<{
   structure: { campaigns: number; adsets: number; ads: number };
   insights: number;
 }> {
   const supabase = createAdminClient();
 
-  // Auto-refresh token if expiring within 7 days
-  accessToken = await maybeRefreshToken(adAccountId, accessToken);
+  // Auto-refresh token if expiring within 7 days (skipped for system_user)
+  accessToken = await maybeRefreshToken(adAccountId, accessToken, credentialType);
 
   // Create sync log entry
   const { data: syncLog, error: logError } = await supabase
@@ -646,6 +681,12 @@ export async function runFullSync(
 
     return { structure, insights };
   } catch (error) {
+    // Report auth errors to credential health
+    if (error instanceof MetaApiException && error.isTokenExpired) {
+      console.error(`[Sync] Token expired for ${adAccountId} (credential_type: ${credentialType})`);
+      await updateCredentialHealth(adAccountId, 'expired');
+    }
+
     // Update sync log with error
     if (syncLog) {
       await supabase
