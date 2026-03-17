@@ -9,6 +9,7 @@
  */
 
 import { createAdminClient } from '@/lib/supabase/admin';
+import { sendAlertNotification } from '@/lib/notifications';
 
 const SPEND_THRESHOLD = 50; // Alert if spend > $50 with 0 conversions
 const CTR_DROP_THRESHOLD = 30; // Alert if CTR drops > 30% vs 7d avg
@@ -48,7 +49,7 @@ export async function checkAlerts(adAccountId: string): Promise<number> {
     for (const ad of noConvAds) {
       if (await alertExistsToday(supabase, adAccountId, ad.ad_id, 'no_conversions', today)) continue;
 
-      await supabase.from('meta_alerts').insert({
+      await insertAlertAndNotify(supabase, {
         ad_account_id: adAccountId,
         ad_id: ad.ad_id,
         type: 'no_conversions',
@@ -102,7 +103,7 @@ export async function checkAlerts(adAccountId: string): Promise<number> {
           if (dropPct > CTR_DROP_THRESHOLD) {
             if (await alertExistsToday(supabase, adAccountId, todayAd.ad_id, 'ctr_fatigue', today)) continue;
 
-            await supabase.from('meta_alerts').insert({
+            await insertAlertAndNotify(supabase, {
               ad_account_id: adAccountId,
               ad_id: todayAd.ad_id,
               type: 'ctr_fatigue',
@@ -132,7 +133,7 @@ export async function checkAlerts(adAccountId: string): Promise<number> {
       if (adCpa > cpaThreshold) {
         if (await alertExistsToday(supabase, adAccountId, ad.ad_id, 'high_cpa', today)) continue;
 
-        await supabase.from('meta_alerts').insert({
+        await insertAlertAndNotify(supabase, {
           ad_account_id: adAccountId,
           ad_id: ad.ad_id,
           type: 'high_cpa',
@@ -157,7 +158,7 @@ export async function checkAlerts(adAccountId: string): Promise<number> {
     for (const ad of highFreqAds) {
       if (await alertExistsToday(supabase, adAccountId, ad.ad_id, 'frequency_fatigue', today)) continue;
 
-      await supabase.from('meta_alerts').insert({
+      await insertAlertAndNotify(supabase, {
         ad_account_id: adAccountId,
         ad_id: ad.ad_id,
         type: 'frequency_fatigue',
@@ -169,6 +170,18 @@ export async function checkAlerts(adAccountId: string): Promise<number> {
   }
 
   return alertsCreated;
+}
+
+/** Insert an alert and fire-and-forget a notification */
+async function insertAlertAndNotify(
+  supabase: ReturnType<typeof createAdminClient>,
+  alert: { ad_account_id: string; ad_id: string; type: string; message: string; severity: string }
+) {
+  await supabase.from('meta_alerts').insert(alert);
+  // Fire-and-forget notification
+  sendAlertNotification(alert).catch(err =>
+    console.warn('[Alerts] Notification failed:', err instanceof Error ? err.message : err)
+  );
 }
 
 /** Check if an alert of this type already exists today for this ad */

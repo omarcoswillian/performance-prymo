@@ -3,12 +3,33 @@
  *
  * Handles syncing campaigns, adsets, ads (structure) and daily insights
  * from Meta Marketing API to Supabase.
+ *
+ * Two sync modes:
+ * - INCREMENTAL: Re-syncs the last INCREMENTAL_DAYS (today, yesterday, day before)
+ *   to capture attribution corrections and partial-day data. Runs on every cron.
+ * - BACKFILL: Progressively fetches full historical data from account creation,
+ *   working backwards in monthly chunks. Saves cursor to resume across runs.
  */
 
 import { createAdminClient } from '@/lib/supabase/admin';
 import { decrypt, encrypt } from '@/lib/crypto';
 import { metaApiFetchAll, metaApiFetch, MetaApiException, refreshLongLivedToken } from './client';
 import { updateCredentialHealth, type CredentialType } from './credentials';
+import { format, subDays } from 'date-fns';
+import { TZDate } from '@date-fns/tz';
+
+const TIMEZONE = 'America/Sao_Paulo';
+
+/** Days to always re-sync on incremental (today + yesterday + day before) */
+const INCREMENTAL_DAYS = 3;
+
+/** Days per chunk during backfill (monthly chunks) */
+const BACKFILL_CHUNK_DAYS = 30;
+
+/** Format a Date to YYYY-MM-DD */
+function fmtDate(d: Date): string {
+  return d.toISOString().split('T')[0];
+}
 
 // ============================================================
 // Types for Meta API responses
@@ -837,7 +858,7 @@ async function maybeRefreshToken(
 }
 
 // ============================================================
-// Full Sync Orchestrator
+// Full Sync Orchestrator (legacy — wraps incremental)
 // ============================================================
 
 export async function runFullSync(
@@ -923,6 +944,275 @@ export async function runFullSync(
             error instanceof Error ? error.message : 'Unknown error',
         })
         .eq('id', syncLog.id);
+    }
+
+    throw error;
+  }
+}
+
+// ============================================================
+// Incremental Sync (recent days — runs every cron)
+// ============================================================
+
+/**
+ * Syncs the last INCREMENTAL_DAYS of data (today, yesterday, day before).
+ * This ensures attribution corrections are captured and today's partial
+ * data is never missed.
+ *
+ * Also syncs structure (campaigns, adsets, ads) every time.
+ */
+export async function runIncrementalSync(
+  adAccountId: string,
+  accessToken: string,
+  conversionEvent: string,
+  credentialType: CredentialType = 'user'
+): Promise<{
+  structure: { campaigns: number; adsets: number; ads: number };
+  insights: number;
+  dateStart: string;
+  dateEnd: string;
+}> {
+  const supabase = createAdminClient();
+  accessToken = await maybeRefreshToken(adAccountId, accessToken, credentialType);
+
+  const today = new TZDate(new Date(), TIMEZONE);
+  const dateEnd = format(today, 'yyyy-MM-dd');
+  const dateStart = format(subDays(today, INCREMENTAL_DAYS - 1), 'yyyy-MM-dd');
+
+  console.log(`[Incremental] ${adAccountId}: syncing ${dateStart} → ${dateEnd}`);
+
+  const { data: syncLog } = await supabase
+    .from('meta_sync_log')
+    .insert({ ad_account_id: adAccountId, sync_type: 'incremental', status: 'running' })
+    .select('id')
+    .single();
+
+  // Structure sync is non-blocking — failures should not prevent insights sync
+  let structure = { campaigns: 0, adsets: 0, ads: 0 };
+  try {
+    structure = await syncMetaStructure(adAccountId, accessToken);
+  } catch (structErr) {
+    console.warn('[Incremental] Structure sync failed (non-critical):', structErr instanceof Error ? structErr.message : structErr);
+    // If token is expired, re-throw — insights will also fail
+    if (structErr instanceof MetaApiException && structErr.isTokenExpired) {
+      throw structErr;
+    }
+  }
+
+  try {
+    const insights = await syncMetaInsightsDaily(
+      adAccountId, accessToken, dateStart, dateEnd, conversionEvent
+    );
+
+    // Placement sync (non-blocking)
+    let placementCount = 0;
+    try {
+      placementCount = await syncPlacementInsights(
+        adAccountId, accessToken, dateStart, dateEnd, conversionEvent
+      );
+    } catch (e) {
+      console.warn('[Incremental] Placement sync failed (non-critical):', e instanceof Error ? e.message : e);
+    }
+
+    if (syncLog) {
+      await supabase.from('meta_sync_log').update({
+        status: 'completed',
+        completed_at: new Date().toISOString(),
+        records_synced: structure.campaigns + structure.adsets + structure.ads + insights + placementCount,
+      }).eq('id', syncLog.id);
+    }
+
+    console.log(`[Incremental] ${adAccountId}: done — ${insights} insight rows synced`);
+    return { structure, insights, dateStart, dateEnd };
+  } catch (error) {
+    if (error instanceof MetaApiException && error.isTokenExpired) {
+      await updateCredentialHealth(adAccountId, 'expired');
+    }
+    if (syncLog) {
+      await supabase.from('meta_sync_log').update({
+        status: 'failed',
+        completed_at: new Date().toISOString(),
+        error_message: error instanceof Error ? error.message : 'Unknown error',
+      }).eq('id', syncLog.id);
+    }
+    throw error;
+  }
+}
+
+// ============================================================
+// Backfill Historical Data
+// ============================================================
+
+/**
+ * Fetches the account creation date from Meta API.
+ * This determines how far back we can go for historical data.
+ */
+async function getAccountCreatedTime(
+  adAccountId: string,
+  accessToken: string
+): Promise<string> {
+  try {
+    const data = await metaApiFetch<{ created_time?: string }>(
+      adAccountId,
+      accessToken,
+      { fields: 'created_time' }
+    );
+    if (data.created_time) {
+      return data.created_time.split('T')[0];
+    }
+  } catch (e) {
+    console.warn(`[Backfill] Could not fetch account creation date for ${adAccountId}:`, e instanceof Error ? e.message : e);
+  }
+  // Fallback: 3 years ago (Meta API limit for insights is ~37 months)
+  return fmtDate(new Date(Date.now() - 3 * 365 * 24 * 60 * 60 * 1000));
+}
+
+/**
+ * Progressive backfill: fetches historical data working backwards from the
+ * current cursor position. Processes one chunk (BACKFILL_CHUNK_DAYS) per call,
+ * saving the cursor after each chunk so it can resume across cron runs.
+ *
+ * Meta API limitation: Insights data is available for up to 37 months.
+ * The backfill respects this and goes as far back as possible.
+ *
+ * @returns Summary of what was synced, or null if backfill is already complete.
+ */
+export async function runBackfillChunk(
+  adAccountId: string,
+  accessToken: string,
+  conversionEvent: string,
+  credentialType: CredentialType = 'user'
+): Promise<{
+  insights: number;
+  dateStart: string;
+  dateEnd: string;
+  backfillComplete: boolean;
+  oldestDate: string | null;
+} | null> {
+  const supabase = createAdminClient();
+  accessToken = await maybeRefreshToken(adAccountId, accessToken, credentialType);
+  const decryptedToken = decrypt(accessToken);
+
+  // Get current backfill state
+  const { data: account } = await supabase
+    .from('meta_accounts')
+    .select('backfill_status, backfill_cursor, backfill_oldest_date')
+    .eq('ad_account_id', adAccountId)
+    .single();
+
+  if (account?.backfill_status === 'completed') {
+    console.log(`[Backfill] ${adAccountId}: already completed, skipping`);
+    return null;
+  }
+
+  // Determine the floor: account creation date or Meta API limit (~37 months)
+  const metaApiLimit = fmtDate(new Date(Date.now() - 37 * 30 * 24 * 60 * 60 * 1000));
+  const accountCreated = await getAccountCreatedTime(adAccountId, decryptedToken);
+  const floorDate = accountCreated > metaApiLimit ? accountCreated : metaApiLimit;
+
+  // Determine where to start this chunk
+  const today = new TZDate(new Date(), TIMEZONE);
+  const todayStr = format(today, 'yyyy-MM-dd');
+
+  let chunkEnd: string;
+  if (account?.backfill_cursor) {
+    // Continue from where we left off (one day before the cursor)
+    const cursor = new Date(account.backfill_cursor);
+    cursor.setDate(cursor.getDate() - 1);
+    chunkEnd = fmtDate(cursor);
+  } else {
+    // First backfill: start from INCREMENTAL_DAYS ago (incremental handles recent days)
+    chunkEnd = fmtDate(subDays(today, INCREMENTAL_DAYS));
+  }
+
+  // If we've already gone past the floor, backfill is complete
+  if (chunkEnd < floorDate) {
+    console.log(`[Backfill] ${adAccountId}: completed! Floor date: ${floorDate}`);
+    await supabase.from('meta_accounts').update({
+      backfill_status: 'completed',
+      backfill_completed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }).eq('ad_account_id', adAccountId);
+    return null;
+  }
+
+  // Calculate chunk start (go back BACKFILL_CHUNK_DAYS from chunkEnd)
+  const chunkStartDate = new Date(chunkEnd);
+  chunkStartDate.setDate(chunkStartDate.getDate() - BACKFILL_CHUNK_DAYS + 1);
+  const chunkStart = chunkStartDate < new Date(floorDate) ? floorDate : fmtDate(chunkStartDate);
+
+  console.log(`[Backfill] ${adAccountId}: chunk ${chunkStart} → ${chunkEnd} (floor: ${floorDate})`);
+
+  // Mark as running
+  await supabase.from('meta_accounts').update({
+    backfill_status: 'running',
+    updated_at: new Date().toISOString(),
+  }).eq('ad_account_id', adAccountId);
+
+  const { data: syncLog } = await supabase
+    .from('meta_sync_log')
+    .insert({ ad_account_id: adAccountId, sync_type: 'backfill', status: 'running' })
+    .select('id')
+    .single();
+
+  try {
+    const insights = await syncMetaInsightsDaily(
+      adAccountId, accessToken, chunkStart, chunkEnd, conversionEvent
+    );
+
+    // Also sync placement for this chunk (non-blocking)
+    try {
+      await syncPlacementInsights(adAccountId, accessToken, chunkStart, chunkEnd, conversionEvent);
+    } catch (e) {
+      console.warn('[Backfill] Placement sync failed (non-critical):', e instanceof Error ? e.message : e);
+    }
+
+    // Check if backfill is now complete
+    const backfillComplete = chunkStart <= floorDate;
+
+    // Update cursor and oldest date
+    await supabase.from('meta_accounts').update({
+      backfill_status: backfillComplete ? 'completed' : 'pending',
+      backfill_cursor: chunkStart,
+      backfill_oldest_date: chunkStart,
+      backfill_completed_at: backfillComplete ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString(),
+    }).eq('ad_account_id', adAccountId);
+
+    if (syncLog) {
+      await supabase.from('meta_sync_log').update({
+        status: 'completed',
+        completed_at: new Date().toISOString(),
+        records_synced: insights,
+      }).eq('id', syncLog.id);
+    }
+
+    console.log(`[Backfill] ${adAccountId}: chunk done — ${insights} rows, complete: ${backfillComplete}`);
+
+    return {
+      insights,
+      dateStart: chunkStart,
+      dateEnd: chunkEnd,
+      backfillComplete,
+      oldestDate: chunkStart,
+    };
+  } catch (error) {
+    if (error instanceof MetaApiException && error.isTokenExpired) {
+      await updateCredentialHealth(adAccountId, 'expired');
+    }
+
+    // Save cursor even on failure so we can retry from same position
+    await supabase.from('meta_accounts').update({
+      backfill_status: 'failed',
+      updated_at: new Date().toISOString(),
+    }).eq('ad_account_id', adAccountId);
+
+    if (syncLog) {
+      await supabase.from('meta_sync_log').update({
+        status: 'failed',
+        completed_at: new Date().toISOString(),
+        error_message: error instanceof Error ? error.message : 'Unknown error',
+      }).eq('id', syncLog.id);
     }
 
     throw error;

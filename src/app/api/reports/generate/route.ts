@@ -14,7 +14,7 @@ import type { GA4PageRow } from '@/lib/ga4';
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
-const SYSTEM_PROMPT = `Você é um analista sênior de mídia paga especializado em Meta Ads (Facebook/Instagram Ads).
+const SYSTEM_PROMPT_AI = `Você é um analista sênior de mídia paga especializado em Meta Ads (Facebook/Instagram Ads).
 Gere relatórios operacionais em PT-BR, diretos e sem enrolação.
 
 Formato OBRIGATÓRIO do relatório (use markdown):
@@ -23,31 +23,55 @@ Formato OBRIGATÓRIO do relatório (use markdown):
 (4-6 bullets curtos com os números mais importantes)
 
 ## 2. Situação Geral
-(visão geral da mídia: investimento, retorno, distribuição de status dos criativos)
+(visão geral da mídia: investimento, retorno, ROAS, distribuição de status dos criativos)
 
 ## 3. O que está funcionando
-(top criativos com boas métricas, campanhas saudáveis)
+(top criativos com boas métricas, campanhas saudáveis — cite ROAS quando disponível)
 
 ## 4. O que precisa melhorar
 (piores criativos, desperdício de verba, problemas de CTR/CPA)
 
 ## 5. Sugestões práticas
-(ações objetivas e diretas: escalar X, matar Y, variar Z, otimizar página, travar tráfego)
+(ações ESPECÍFICAS com nomes de anúncios: "Pausar anúncio X porque gastou R$Y sem conversão", "Escalar anúncio Z aumentando budget em 30%", "Trocar thumbnail do anúncio W — CTR abaixo da média", "Criar variação do anúncio V com headline diferente")
 
 ## 6. Próximos passos
 (checklist curto de 3-5 itens para ação imediata)
 
 REGRAS ABSOLUTAS:
 - Use APENAS os dados fornecidos no contexto. Não invente métricas.
-- Se algum dado estiver faltando, mencione "dado indisponível".
-- Não contradiga o status automático do sistema (ESCALAR/VARIAR/MATAR).
+- Não contradiga o status automático do sistema (ESCALAR/VARIAR/MATAR/APRENDENDO).
 - Linguagem operacional e acionável. Sem buzzwords, sem enrolação.
-- Cite nomes de criativos e campanhas específicas.
+- Cite nomes de criativos e campanhas específicas SEMPRE.
 - Use **negrito** para destacar números importantes.
-- Use bullets (- ) para listas.
-- Se dados de páginas (GA4) estiverem disponíveis, inclua uma seção "Performance de Páginas" entre as seções 4 e 5.
-- Na seção de páginas: destaque páginas com alta conversão, páginas com sessões altas mas conversão baixa (problema de narrativa), e páginas com sessões baixas (problema de tráfego/tracking).
-- Se dados de GA4 não estiverem disponíveis, mencione "dados de GA4 indisponíveis" e siga normalmente.`;
+- Se dados de páginas (GA4) estiverem disponíveis, inclua "Performance de Páginas" entre seções 4 e 5.
+- Se dados de GA4 não estiverem disponíveis, siga normalmente.`;
+
+const SYSTEM_PROMPT_WEEKLY = `Você é um analista sênior de mídia paga. Gere um relatório semanal comparativo em PT-BR.
+
+Formato OBRIGATÓRIO (use markdown):
+
+## 1. Resumo da Semana
+(4-6 bullets com os números mais importantes e comparação com período anterior)
+
+## 2. Comparativo de Períodos
+(tabela ou comparação clara: gasto, conversões, CPA, CTR, ROAS — período atual vs anterior, com delta % e interpretação)
+
+## 3. Destaques Positivos
+(o que melhorou, criativos que escalaram, campanhas que cresceram)
+
+## 4. Pontos de Atenção
+(o que piorou, criativos em declínio, desperdício crescente)
+
+## 5. Ações Recomendadas
+(ações ESPECÍFICAS e NOMEADAS: "Pausar anúncio X", "Escalar anúncio Y +30% budget", "Trocar criativo Z — saturação", "Criar variação do anúncio W com headline diferente")
+
+## 6. Prioridades para Próxima Semana
+(3-5 itens ordenados por impacto)
+
+REGRAS: Use APENAS os dados fornecidos. Cite nomes específicos. Linguagem direta e acionável. Use **negrito** para números.`;
+
+// Keep backward compat
+const SYSTEM_PROMPT = SYSTEM_PROMPT_AI;
 
 interface GenerateRequest {
   ad_account_id: string;
@@ -199,8 +223,10 @@ export async function POST(request: NextRequest) {
     const totalCompras = creatives.reduce((s, c) => s + c.compras, 0);
     const totalClicks = creatives.reduce((s, c) => s + c.clicks, 0);
     const totalImpressions = creatives.reduce((s, c) => s + c.impressions, 0);
+    const totalConvValue = creatives.reduce((s, c) => s + c.conversion_value, 0);
     const avgCtr = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0;
     const avgCpa = totalCompras > 0 ? totalSpend / totalCompras : null;
+    const avgRoas = totalSpend > 0 && totalConvValue > 0 ? totalConvValue / totalSpend : null;
 
     // ── 3. Build context for AI ─────────────────────────────────
     const contextJson = {
@@ -214,6 +240,8 @@ export async function POST(request: NextRequest) {
         cpa_medio: avgCpa ? formatCurrency(avgCpa) : 'N/A',
         ctr_benchmark: formatPercent(ctrBenchmark),
         cpa_alvo: formatCurrency(DEFAULT_SETTINGS.cpa_target),
+        roas_geral: avgRoas != null ? `${avgRoas.toFixed(1)}x` : 'N/A',
+        valor_conversoes: formatCurrency(totalConvValue),
       },
       distribuicao_status: {
         escalar: escalar.length,
@@ -226,10 +254,14 @@ export async function POST(request: NextRequest) {
         .map((c) => ({
           nome: c.name,
           campanha: c.campaign_name,
+          tipo: c.campaign_type,
           compras: c.compras,
           cpa: formatCurrency(c.cpa),
+          roas: c.roas != null ? `${c.roas.toFixed(1)}x` : 'N/A',
           ctr: formatPercent(c.ctr),
           gasto: formatCurrency(c.spend),
+          cta: c.cta || 'N/A',
+          score: c.score,
           status: c.status,
         })),
       piores_criativos: matar
@@ -238,8 +270,10 @@ export async function POST(request: NextRequest) {
         .map((c) => ({
           nome: c.name,
           campanha: c.campaign_name,
+          tipo: c.campaign_type,
           compras: c.compras,
           cpa: formatCurrency(c.cpa),
+          roas: c.roas != null ? `${c.roas.toFixed(1)}x` : 'N/A',
           ctr: formatPercent(c.ctr),
           gasto: formatCurrency(c.spend),
           motivo: c.status_reason,
@@ -371,8 +405,8 @@ ${JSON.stringify(contextJson, null, 2)}`;
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 3000,
-        system: SYSTEM_PROMPT,
+        max_tokens: report_type === 'weekly' ? 4000 : 3000,
+        system: report_type === 'weekly' ? SYSTEM_PROMPT_WEEKLY : SYSTEM_PROMPT_AI,
         messages: [
           { role: 'user', content: userPrompt },
         ],

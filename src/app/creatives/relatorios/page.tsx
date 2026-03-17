@@ -57,8 +57,28 @@ function formatTimestampBR(isoStr: string): string {
 
 // ── Page ───────────────────────────────────────────────────────
 
+interface PeriodComparison {
+  current: { spend: number; conversions: number; cpa: number | null; ctr: number; roas: number | null };
+  previous: { spend: number; conversions: number; cpa: number | null; ctr: number; roas: number | null };
+}
+
+function computeAggregates(creatives: { spend: number; impressions: number; clicks: number; compras: number; conversion_value: number }[]) {
+  const spend = creatives.reduce((s, c) => s + c.spend, 0);
+  const impressions = creatives.reduce((s, c) => s + c.impressions, 0);
+  const clicks = creatives.reduce((s, c) => s + c.clicks, 0);
+  const conversions = creatives.reduce((s, c) => s + c.compras, 0);
+  const convValue = creatives.reduce((s, c) => s + (c.conversion_value || 0), 0);
+  return {
+    spend,
+    conversions,
+    cpa: conversions > 0 ? spend / conversions : null,
+    ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
+    roas: spend > 0 && convValue > 0 ? convValue / spend : null,
+  };
+}
+
 export default function RelatoriosPage() {
-  const { selectedAccount, accounts, dateStart, dateEnd } = useAccount();
+  const { selectedAccount, accounts, dateStart, dateEnd, prevDateStart, prevDateEnd } = useAccount();
   const [activeTab, setActiveTab] = useState<ReportTab>('ai');
   const [reports, setReports] = useState<Report[]>([]);
   const [loadingList, setLoadingList] = useState(true);
@@ -66,10 +86,29 @@ export default function RelatoriosPage() {
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
   const [copied, setCopied] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [comparison, setComparison] = useState<PeriodComparison | null>(null);
+  const [compLoading, setCompLoading] = useState(false);
 
   const clientName =
     accounts.find((a) => a.ad_account_id === selectedAccount)?.name ||
     selectedAccount;
+
+  // Fetch period comparison
+  useEffect(() => {
+    if (!selectedAccount || !dateStart || !dateEnd || !prevDateStart || !prevDateEnd) return;
+    setCompLoading(true);
+    Promise.all([
+      fetch(`/api/meta/insights?ad_account_id=${selectedAccount}&date_start=${dateStart}&date_end=${dateEnd}&type=command`).then(r => r.ok ? r.json() : null),
+      fetch(`/api/meta/insights?ad_account_id=${selectedAccount}&date_start=${prevDateStart}&date_end=${prevDateEnd}&type=command`).then(r => r.ok ? r.json() : null),
+    ]).then(([curr, prev]) => {
+      if (curr && prev) {
+        setComparison({
+          current: computeAggregates(curr.creatives || []),
+          previous: computeAggregates(prev.creatives || []),
+        });
+      }
+    }).catch(() => {}).finally(() => setCompLoading(false));
+  }, [selectedAccount, dateStart, dateEnd, prevDateStart, prevDateEnd]);
 
   // ── Fetch reports ────────────────────────────────────────────
 
@@ -207,18 +246,20 @@ export default function RelatoriosPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-bold">Relatórios</h1>
-        <Button
-          onClick={handleGenerate}
-          disabled={generating || !selectedAccount}
-          className="h-9 px-5"
-        >
-          {generating ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          ) : (
-            <Brain className="mr-2 h-4 w-4" />
-          )}
-          {generating ? 'Gerando...' : 'Gerar com IA'}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={handleGenerate}
+            disabled={generating || !selectedAccount}
+            className="h-9 px-5"
+          >
+            {generating ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Brain className="mr-2 h-4 w-4" />
+            )}
+            {generating ? 'Gerando...' : activeTab === 'weekly' ? 'Gerar Semanal' : 'Gerar com IA'}
+          </Button>
+        </div>
       </div>
 
       {/* Period info */}
@@ -230,6 +271,41 @@ export default function RelatoriosPage() {
           </span>
           <span className="text-muted-foreground/50">·</span>
           <span>Cliente: {clientName}</span>
+        </div>
+      )}
+
+      {/* Period comparison */}
+      {comparison && !compLoading && (
+        <div className="rounded-lg border bg-card p-4 mb-4">
+          <div className="text-sm font-medium mb-3">Comparativo de Periodos</div>
+          <div className="grid grid-cols-5 gap-3">
+            {([
+              { label: 'Gasto', cur: comparison.current.spend, prev: comparison.previous.spend, fmt: (v: number | null) => v != null ? `R$${v.toFixed(2)}` : '-', invert: true },
+              { label: 'Conversoes', cur: comparison.current.conversions, prev: comparison.previous.conversions, fmt: (v: number | null) => v != null ? String(v) : '-', invert: false },
+              { label: 'CPA', cur: comparison.current.cpa, prev: comparison.previous.cpa, fmt: (v: number | null) => v != null ? `R$${v.toFixed(2)}` : '-', invert: true },
+              { label: 'CTR', cur: comparison.current.ctr, prev: comparison.previous.ctr, fmt: (v: number | null) => v != null ? `${v.toFixed(2)}%` : '-', invert: false },
+              { label: 'ROAS', cur: comparison.current.roas, prev: comparison.previous.roas, fmt: (v: number | null) => v != null ? `${v.toFixed(1)}x` : '-', invert: false },
+            ] as const).map(({ label, cur, prev, fmt, invert }) => {
+              const delta = cur != null && prev != null && prev !== 0
+                ? ((cur - prev) / Math.abs(prev)) * 100
+                : null;
+              const isGood = delta != null
+                ? (invert ? delta < 0 : delta > 0)
+                : null;
+              return (
+                <div key={label} className="text-center">
+                  <div className="text-[10px] text-muted-foreground mb-1">{label}</div>
+                  <div className="text-sm font-bold">{fmt(cur)}</div>
+                  <div className="text-[10px] text-muted-foreground">ant. {fmt(prev)}</div>
+                  {delta != null && (
+                    <div className={`text-xs font-medium mt-0.5 ${isGood ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {delta > 0 ? '+' : ''}{delta.toFixed(1)}%
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 

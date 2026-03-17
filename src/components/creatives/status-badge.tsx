@@ -8,6 +8,7 @@ const statusConfig: Record<DecisionStatus, { bg: string; text: string; label: st
   VARIAR: { bg: 'bg-amber-500/15', text: 'text-amber-700 dark:text-amber-400', label: 'VARIAR' },
   MATAR: { bg: 'bg-red-500/15', text: 'text-red-700 dark:text-red-400', label: 'MATAR' },
   'FORÇADO': { bg: 'bg-purple-500/15', text: 'text-purple-700 dark:text-purple-400', label: 'FORÇADO' },
+  APRENDENDO: { bg: 'bg-blue-500/15', text: 'text-blue-700 dark:text-blue-400', label: 'APRENDENDO' },
 };
 
 export function StatusBadge({ status }: { status: DecisionStatus }) {

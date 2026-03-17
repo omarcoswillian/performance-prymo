@@ -4,6 +4,8 @@ import { DEFAULT_SETTINGS } from '@/lib/decision-engine';
 import { formatCurrency } from '@/lib/format';
 import { Settings, Globe, Check, Loader2, ChevronDown, RefreshCw, Share2, Shield, ShieldCheck, ShieldAlert, ShieldX, Key } from 'lucide-react';
 import { useAccount } from '@/components/creatives/account-context';
+import { NotificationSettings } from '@/components/creatives/notification-settings';
+import { ClientManagement } from '@/components/creatives/client-management';
 import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 
@@ -502,6 +504,12 @@ export default function ConfiguracoesPage() {
           <p>Adicione a Service Account como <strong>Viewer</strong> no GA4 Property.</p>
         </div>
       </div>
+
+      {/* Client Portal */}
+      <ClientManagement />
+
+      {/* Notifications */}
+      <NotificationSettings />
 
       {/* Decision Rules — Editable */}
       <SettingsEditor selectedAccount={selectedAccount} />

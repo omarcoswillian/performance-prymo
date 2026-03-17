@@ -16,8 +16,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Monitor Criativo - Meta Ads Dashboard",
+  title: "Prymo - Meta Ads Dashboard",
   description: "Monitoramento de criativos e metricas de anuncios Meta Ads",
+  icons: {
+    icon: "/logo-icon-white.svg",
+  },
 };
 
 export default function RootLayout({

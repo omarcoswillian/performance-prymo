@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { runFullSync } from '@/lib/meta/sync';
+import { runIncrementalSync, runBackfillChunk } from '@/lib/meta/sync';
 import { checkAlerts } from '@/lib/meta/alerts';
 import { syncGA4ForAccount } from '@/lib/ga4';
 import { resolveDateRange } from '@/lib/date-utils';
@@ -12,8 +12,11 @@ export const maxDuration = 60;
  * Syncs a single account. Called by the main cron dispatcher.
  * Protected by CRON_SECRET.
  *
- * Uses incremental sync: only last 7 days for cron (daily),
- * full 365 days only on manual sync via query param.
+ * Two-phase sync on every cron run:
+ * 1) INCREMENTAL: always re-sync last 3 days (today, yesterday, day before)
+ *    to capture attribution corrections and partial-day data.
+ * 2) BACKFILL: progressively fetch one chunk (~30 days) of historical data,
+ *    working backwards from the cursor. Saves progress to resume next run.
  */
 export async function POST(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
@@ -23,18 +26,59 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { ad_account_id, access_token, conversion_event, credential_type, full_sync } = await request.json();
+  const { ad_account_id, access_token, conversion_event, credential_type } = await request.json();
 
   if (!ad_account_id || !access_token) {
     return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
   }
 
-  // Incremental: 7 days for daily cron, 365 only when explicitly requested
-  const syncDays = full_sync ? 365 : 7;
-  const { dateStart, dateEnd } = resolveDateRange(syncDays);
+  const results: Record<string, unknown> = { ad_account_id };
 
   try {
-    await runFullSync(ad_account_id, access_token, conversion_event, dateStart, dateEnd, credential_type || 'user');
+    // Phase 1: Incremental sync (always runs — last 3 days)
+    const incremental = await runIncrementalSync(
+      ad_account_id,
+      access_token,
+      conversion_event,
+      credential_type || 'user'
+    );
+    results.incremental = {
+      success: true,
+      insights: incremental.insights,
+      dateStart: incremental.dateStart,
+      dateEnd: incremental.dateEnd,
+    };
+
+    // Phase 2: Backfill one historical chunk (if not yet complete)
+    try {
+      const backfill = await runBackfillChunk(
+        ad_account_id,
+        access_token,
+        conversion_event,
+        credential_type || 'user'
+      );
+      if (backfill) {
+        results.backfill = {
+          success: true,
+          insights: backfill.insights,
+          dateStart: backfill.dateStart,
+          dateEnd: backfill.dateEnd,
+          backfillComplete: backfill.backfillComplete,
+          oldestDate: backfill.oldestDate,
+        };
+      } else {
+        results.backfill = { success: true, status: 'already_complete' };
+      }
+    } catch (backfillErr) {
+      console.error(`[Cron] Backfill failed for ${ad_account_id}:`, backfillErr);
+      results.backfill = {
+        success: false,
+        error: backfillErr instanceof Error ? backfillErr.message : 'Unknown error',
+      };
+      // Don't throw — backfill failure shouldn't block incremental success
+    }
+
+    // Check alerts after sync
     await checkAlerts(ad_account_id);
 
     // Sync GA4 (D-1)
@@ -45,11 +89,11 @@ export async function POST(request: NextRequest) {
       console.warn(`[Cron] GA4 sync skipped for ${ad_account_id}:`, ga4Err);
     }
 
-    return NextResponse.json({ ad_account_id, success: true, days_synced: syncDays });
+    return NextResponse.json({ ...results, success: true });
   } catch (err) {
     console.error(`[Cron] Failed to sync ${ad_account_id}:`, err);
     return NextResponse.json({
-      ad_account_id,
+      ...results,
       success: false,
       error: err instanceof Error ? err.message : 'Unknown error',
     });

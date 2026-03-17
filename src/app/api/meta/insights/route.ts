@@ -97,6 +97,8 @@ export async function GET(request: NextRequest) {
           return NextResponse.json({ error: byAdResult.error.message }, { status: 500 });
         }
 
+        console.log(`[Insights] ${adAccountId} ${dateStart}→${dateEnd}: RPC returned ${Array.isArray(byAdResult.data) ? byAdResult.data.length : 0} ads`);
+
         // Build effective settings: DB values override defaults
         const dbSettings = settingsResult.data;
         const effectiveSettings: DecisionSettings = {

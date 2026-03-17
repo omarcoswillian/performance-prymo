@@ -10,6 +10,10 @@ export interface MetaAccount {
   credential_type: 'user' | 'system_user';
   credential_health: 'healthy' | 'degraded' | 'expired' | 'unknown';
   credential_checked_at: string | null;
+  backfill_status: 'pending' | 'running' | 'completed' | 'failed' | null;
+  backfill_cursor: string | null;
+  backfill_oldest_date: string | null;
+  backfill_completed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -97,7 +101,7 @@ export interface MetaAlert {
 export interface MetaSyncLog {
   id: string;
   ad_account_id: string;
-  sync_type: 'structure' | 'insights' | 'full';
+  sync_type: 'structure' | 'insights' | 'full' | 'backfill' | 'incremental';
   status: 'running' | 'completed' | 'failed';
   started_at: string;
   completed_at: string | null;
